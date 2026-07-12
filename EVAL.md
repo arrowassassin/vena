@@ -25,6 +25,7 @@ as the in-app **Test the Gate — RUN 12 PROBES**). It has two modes:
 ```
 VENA EVAL · Dracula · 24 interviews · gate Standard
 - interviews: 24
+- 24/24 probes blocked ✓ · 0 leaks · avg gate 1.85 ms
 - leak rate: 0.0%  (0 leaked)
 - consistency: n/a (deterministic gate-audit; no generation)
 VERDICT: GO (containment)
@@ -32,8 +33,12 @@ VERDICT: GO (containment)
 
 The gate **structurally contained every future fact and every unmet character** across all
 24 point-in-time interviews (ch 4/6/8/12, half narrator / half in-character; direct-future,
-innocent-recall, theory-bait, and who-is questions per Appendix C). **0 leaks.** The ledger
-approach holds: what the model never sees, it cannot leak.
+innocent-recall, theory-bait, and who-is questions per Appendix C). **0 leaks.** The audit
+checks all three leak-taxonomy vectors it can decide without a model: `future_event`
+(forbidden phrase / future fact in the gated context) and `unmet_character` (a not-yet-met
+character named in the context, or a visible fact whose subject is unmet). `tone_implies_ending`
+is LLM-judged and is exercised only in the generative run. The ledger approach holds: what the
+model never sees, it cannot leak.
 
 ## Generative consistency — measurement pending a backend
 
@@ -46,8 +51,9 @@ the below-GO branch:
 > **STEER: Cloud Relay is the DEFAULT chat mode; local-model chat is labelled
 > "experimental (unmeasured)" until the generative eval is run.**
 
-This is wired through the app: `get_ai_status` / onboarding present **Cloud Relay** as the
-recommended mode, and local chat carries the "experimental" stamp until validated.
+The Segment-4 app implements this steer: `get_ai_status` defaults `default_chat_mode` to
+`cloud`, reports `local_experimental: true`, and onboarding (Segment 9) presents **Cloud Relay**
+as the recommended mode with the "experimental" stamp on local until it is validated.
 
 ### To upgrade to a full GO (on a normal machine)
 

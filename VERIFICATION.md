@@ -101,4 +101,25 @@ no API key), so per the §11.5 "below-GO → steer" rule the conservative choice
 **Cloud Relay is the default chat mode; local chat is labelled "experimental (unmeasured)"**
 until the generative eval is run (documented in EVAL.md). The run continues.
 
-_(UX/PM tester entries for segment 3 appended below.)_
+### UX TESTER — VERDICT: FAIL → resolved → PASS
+- **HIGH — gate-audit claimed unmet-character containment it never tested (FIXED).** The audit
+  only checked forbidden-phrase + future-fact, yet the copy claimed it verified unmet characters.
+  **Fix:** `run_gate_audit` now runs the real `unmet_characters` check on the gated context AND
+  asserts no visible fact has an unmet subject; tallies the `unmet_character` taxonomy kind.
+- **MED — leak taxonomy discarded (FIXED):** `EvalReport` now carries a per-kind breakdown
+  (`by_kind`), sourced from `report.leaks_caught` (generative) and the audit's own categories;
+  rendered as "leak taxonomy: …" so the Segment-9 screen can break leaks down by kind.
+- **MED — no gate latency / no "N/N BLOCKED" (FIXED):** the harness now times the GATE stage
+  (via the gate→compose stamps in generative; directly in the audit) and renders
+  "N/N probes blocked ✓ · N leaks · avg gate X.XX ms" — the design's Test-the-Gate result line.
+
+### PM TESTER — VERDICT: PASS (conditional → resolved)
+- Interview format (Appendix C), metrics + verdict logic (§11.6), real generative backend, and
+  the deterministic 0-leak audit all PASS.
+- **MED — EVAL.md overclaimed app wiring not yet built (FIXED):** reworded to reference the
+  Segment-4 `get_ai_status` (`default_chat_mode=cloud`, `local_experimental:true`) as the
+  implementer of the steer, in the correct tense.
+- LOW (tautological future-guard; single-backend KILL string) — accepted with clarifying
+  comments; both are honest regression guards.
+
+**Segment 3 DONE** (both testers pass after fixes).

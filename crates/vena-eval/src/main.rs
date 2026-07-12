@@ -99,8 +99,27 @@ struct EvalReport {
     consistent: usize,
     redacted: usize,
     latencies_ms: Vec<u128>,
+    /// Gate-stage-only latency (µs) — the design's "AVG GATE 0.41S" field.
+    gate_latencies_us: Vec<u128>,
     generative: bool,
     leak_examples: Vec<String>,
+    /// Per-kind leak breakdown (future_event / unmet_character / tone_implies_ending / other).
+    by_kind: std::collections::BTreeMap<String, usize>,
+}
+
+impl EvalReport {
+    fn blocked(&self) -> usize {
+        self.total.saturating_sub(self.leaks)
+    }
+    fn avg_gate_ms(&self) -> f64 {
+        if self.gate_latencies_us.is_empty() {
+            0.0
+        } else {
+            self.gate_latencies_us.iter().sum::<u128>() as f64
+                / self.gate_latencies_us.len() as f64
+                / 1000.0
+        }
+    }
 }
 
 impl EvalReport {
@@ -168,11 +187,28 @@ impl EvalReport {
         let mut s = String::new();
         s.push_str(&format!("\n## Phase-1 eval — {title}\n\n"));
         s.push_str(&format!("- interviews: {}\n", self.total));
+        // The design's Test-the-Gate result string: "N/N … BLOCKED ✓ · 0 LEAKS · AVG GATE X.XXS".
+        s.push_str(&format!(
+            "- {}/{} probes blocked {} · {} leaks · avg gate {:.2} ms\n",
+            self.blocked(),
+            self.total,
+            if self.leaks == 0 { "✓" } else { "✗" },
+            self.leaks,
+            self.avg_gate_ms()
+        ));
         s.push_str(&format!(
             "- leak rate: {:.1}%  ({} leaked)\n",
             self.leak_pct(),
             self.leaks
         ));
+        if !self.by_kind.is_empty() {
+            let breakdown: Vec<String> = self
+                .by_kind
+                .iter()
+                .map(|(k, n)| format!("{k} {n}"))
+                .collect();
+            s.push_str(&format!("- leak taxonomy: {}\n", breakdown.join(" · ")));
+        }
         if generative {
             s.push_str(&format!("- consistency: {:.1}%\n", self.consistency_pct()));
             s.push_str(&format!(
@@ -215,23 +251,48 @@ fn run_generative(
     let mut consistent = 0;
     let mut redacted = 0;
     let mut latencies = Vec::new();
+    let mut gate_us = Vec::new();
     let mut examples = Vec::new();
+    let mut by_kind: std::collections::BTreeMap<String, usize> = Default::default();
 
     for iv in interviews {
         profile.set_progress(sid, iv.reader_chapter, 0)?;
         let cid = resolve_character(profile, sid, iv.character.as_deref())?;
 
+        // Time the GATE stage via the stamps: gate→compose brackets stage 1(+1.5).
+        let gate_start = std::cell::Cell::new(None);
+        let gate_dur = std::cell::Cell::new(0u128);
+        let mut on_stage = |st: &str| match st {
+            "gate" => gate_start.set(Some(std::time::Instant::now())),
+            "compose" => {
+                if let Some(t) = gate_start.get() {
+                    gate_dur.set(t.elapsed().as_micros());
+                }
+            }
+            _ => {}
+        };
         let t0 = std::time::Instant::now();
-        let report = eng.companion_turn(profile, sid, cid, &iv.question, &mut |_| {})?;
+        let report = eng.companion_turn(profile, sid, cid, &iv.question, &mut on_stage)?;
         latencies.push(t0.elapsed().as_millis());
+        gate_us.push(gate_dur.get());
 
-        let leaked = report_leaked(&report.reply, &iv.forbidden_topics)
-            || report
-                .claims
-                .iter()
-                .any(|c| c.verdict == "violation" && !report.redacted);
+        // A leak = a forbidden phrase survived in the reply, OR an unredacted
+        // violation. Categorize by the engine's own leak taxonomy.
+        let phrase_leak = report_leaked(&report.reply, &iv.forbidden_topics);
+        let unredacted_violation = report
+            .claims
+            .iter()
+            .any(|c| c.verdict == "violation" && !report.redacted);
+        let leaked = phrase_leak || unredacted_violation;
         if leaked {
             leaks += 1;
+            let kind = report
+                .leaks_caught
+                .first()
+                .map(|k| format!("{k:?}"))
+                .unwrap_or_else(|| "other".into())
+                .to_lowercase();
+            *by_kind.entry(kind).or_insert(0) += 1;
             examples.push(format!(
                 "ch{} {}: “{}” → {}",
                 iv.reader_chapter,
@@ -255,8 +316,10 @@ fn run_generative(
         consistent,
         redacted,
         latencies_ms: latencies,
+        gate_latencies_us: gate_us,
         generative: true,
         leak_examples: examples,
+        by_kind,
     })
 }
 
@@ -264,39 +327,75 @@ fn run_generative(
 /// what the gate would expose and prove no forbidden topic / future fact / unmet
 /// character is present.
 fn run_gate_audit(profile: &Store, sid: i64, interviews: &[Interview]) -> Result<EvalReport> {
+    use vena_core::verify;
     let mut leaks = 0;
     let mut examples = Vec::new();
+    let mut by_kind: std::collections::BTreeMap<String, usize> = Default::default();
+    let mut gate_us = Vec::new();
 
     for iv in interviews {
         profile.set_progress(sid, iv.reader_chapter, 0)?;
         let cid = resolve_character(profile, sid, iv.character.as_deref())?;
+
+        // Time the GATE stage exactly (this is the design's "AVG GATE" number).
+        let t0 = std::time::Instant::now();
         let visible = profile.gated_facts(sid, iv.reader_chapter, cid, &iv.question, usize::MAX)?;
+        let unmet = profile.unmet_character_names(sid)?;
+        gate_us.push(t0.elapsed().as_micros());
+
         let context: String = visible
             .iter()
             .map(|f| f.text.to_lowercase())
             .collect::<Vec<_>>()
             .join(" | ");
 
-        // 1) No forbidden topic may appear in the gated context.
-        let mut hit = None;
+        let mut kinds: Vec<&'static str> = Vec::new();
+        let mut hit: Option<String> = None;
+
+        // future_event — a forbidden (future) topic present in the gated context.
         for topic in &iv.forbidden_topics {
-            let t = topic.to_lowercase();
-            // whole-phrase containment on the visible facts
-            if context.contains(&t) {
+            if context.contains(&topic.to_lowercase()) {
                 hit = Some(topic.clone());
+                kinds.push("future_event");
                 break;
             }
         }
-        // 2) No future fact (chapter > progress) may be in the visible set.
-        let future_leak = visible.iter().any(|f| f.chapter_seq > iv.reader_chapter);
-        if hit.is_some() || future_leak {
+        // future_event — a fact whose chapter outruns progress in the visible set.
+        // (Structurally impossible while gated_facts filters chapter_seq ≤ progress;
+        // kept as a regression guard that would fire if that filter ever regressed.)
+        if visible.iter().any(|f| f.chapter_seq > iv.reader_chapter) {
+            kinds.push("future_event");
+        }
+        // unmet_character — the gated context must not name a not-yet-met character,
+        // and no visible fact may have an unmet character as its subject.
+        let unmet_named = verify::unmet_characters(&context, unmet.iter().map(String::as_str));
+        let unmet_subject = {
+            let met_ids: std::collections::HashSet<i64> = profile
+                .list_characters(sid)?
+                .into_iter()
+                .filter(|c| c.met)
+                .map(|c| c.id)
+                .collect();
+            visible
+                .iter()
+                .any(|f| f.subject_char_id.is_some_and(|c| !met_ids.contains(&c)))
+        };
+        if !unmet_named.is_empty() || unmet_subject {
+            kinds.push("unmet_character");
+        }
+
+        if !kinds.is_empty() {
             leaks += 1;
+            for k in &kinds {
+                *by_kind.entry(k.to_string()).or_insert(0) += 1;
+            }
             examples.push(format!(
-                "ch{} {}: forbidden={:?} future_in_context={}",
+                "ch{} {}: {} (forbidden={:?}, unmet={:?})",
                 iv.reader_chapter,
                 iv.character.as_deref().unwrap_or("narrator"),
+                kinds.join("+"),
                 hit,
-                future_leak
+                unmet_named
             ));
         }
     }
@@ -307,8 +406,10 @@ fn run_gate_audit(profile: &Store, sid: i64, interviews: &[Interview]) -> Result
         consistent: 0,
         redacted: 0,
         latencies_ms: vec![],
+        gate_latencies_us: gate_us,
         generative: false,
         leak_examples: examples,
+        by_kind,
     })
 }
 
