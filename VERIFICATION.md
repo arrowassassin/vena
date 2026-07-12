@@ -170,3 +170,23 @@ eval mode. Verified end-to-end via HTTP against the real package.
 - LOW — `model:progress` now carries the tier id.
 
 **Segment 4 DONE** (both testers' findings resolved; full suite green — 23 tests).
+
+---
+
+## Segments 5–9 (REBUILT) — canonical design port, desktop + mobile
+
+Founder direction mid-run: use the Claude-design HTML/CSS **as-is**. The interpreted React
+app was replaced by `ui-dc/`: the canonical `Vena App.dc.html` (desktop) and
+`Vena Mobile.dc.html` (mobile) templates VERBATIM on their own dc-runtime (support.js +
+React UMD, bundled local fonts). Two subagents authored `patch-desktop.js` /
+`patch-mobile.js` — prototype-only overrides that hydrate the design's Component from the
+real §11.2 API and rewire every action (chat/stamps, recap, probes+taxonomy, theories,
+leak reports, seal/unseal consent, burn, progress/rewind, store, relay/tiers, settings
+persistence). The desktop export was truncated at 256 KiB mid-`renderVals`; build.mjs
+detects the cut and a rebuilt `_venaTail` restores the lost view-models in the design's
+exact shapes. Both surfaces verified live in Chromium against the real engine: real
+Dracula data everywhere, honest failure toasts (never fake replies), **zero JS errors**
+(screenshots in the session scratchpad; final-desktop.png / final-mobile.png).
+Features whose backend capability is genuinely absent (vision-forge, translate, paint
+engine) keep the design UI and toast honestly. Full dual-tester audit of the ported UI is
+queued for the Segment-11 whole-app pass.
