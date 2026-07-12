@@ -201,7 +201,6 @@ impl GateMode {
     }
 }
 
-
 /// Model-tier branding table (§11.4a). One config table, mapped to real GGUF.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModelTier {

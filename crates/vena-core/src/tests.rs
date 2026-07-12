@@ -76,7 +76,7 @@ fn fixture() -> (Store, i64, std::collections::HashMap<&'static str, i64>) {
         .unwrap(),
     );
 
-    let mut fact = |chapter, subject: Option<i64>, kind, text: &str, known: Vec<KnownBy>, w| {
+    let fact = |chapter, subject: Option<i64>, kind, text: &str, known: Vec<KnownBy>, w| {
         s.insert_fact(&Fact {
             id: 0,
             story_id: sid,
@@ -347,6 +347,46 @@ fn reseal_reopens_theories_on_rewind() {
     assert!(rewound, "set_progress should report a rewind");
     s.reopen_theories_after(sid, 6).unwrap();
     assert!(s.list_theories(sid).unwrap()[0].resolved_status.is_none());
+}
+
+#[test]
+fn cloud_relay_never_receives_ungated_content() {
+    // White-box: build the remote repair prompt path and confirm no spoiler text.
+    let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+    struct Probe(std::sync::Arc<std::sync::Mutex<Vec<String>>>);
+    impl crate::inference::Inference for Probe {
+        fn name(&self) -> String {
+            "probe".into()
+        }
+        fn is_remote(&self) -> bool {
+            true
+        }
+        fn complete(
+            &self,
+            system: &str,
+            _u: &str,
+            _o: &crate::inference::GenOptions,
+        ) -> Result<String, crate::VenaError> {
+            self.0.lock().unwrap().push(system.to_string());
+            // Always leak so both the draft and repair prompts are exercised.
+            Ok("I fear Lucy dies before the end of it all.".into())
+        }
+    }
+    let (s, sid, _) = fixture();
+    s.set_progress(sid, 6, 0).unwrap();
+    let eng = Engine::new(Box::new(Probe(seen.clone())));
+    let _ = eng
+        .companion_turn(&s, sid, None, "Tell me about Lucy.", &mut |_| {})
+        .unwrap();
+    let prompts = seen.lock().unwrap();
+    assert_eq!(prompts.len(), 2, "one draft + one repair prompt");
+    // The gated (draft) system prompt already excludes forbidden facts; the repair
+    // prompt (index 1) must ALSO contain no forbidden text on a remote backend.
+    assert!(
+        !prompts[1].to_lowercase().contains("lucy dies"),
+        "remote repair prompt leaked forbidden text: {}",
+        prompts[1]
+    );
 }
 
 #[test]

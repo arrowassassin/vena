@@ -199,21 +199,34 @@ impl Engine {
             return Ok(self.redact(first, character));
         }
 
-        // STANDARD / RELAXED: one repair regeneration with an explicit "you do not
-        // know X yet" instruction appended, then re-verify.
-        let forbidden_topics: Vec<String> = first
-            .claims
-            .iter()
-            .filter(|c| c.verdict == "violation")
-            .filter_map(|c| c.matched_fact_id)
-            .filter_map(|fid| forbidden.iter().find(|f| f.id == fid))
-            .map(|f| f.text.clone())
-            .collect();
-        let repair_system = format!(
-            "{system}\n\nIMPORTANT: You do NOT yet know any of the following — do not \
-             reference or imply them: {}",
-            forbidden_topics.join("; ")
-        );
+        // STANDARD / RELAXED: one repair regeneration with a "you do not know X yet"
+        // instruction, then re-verify.
+        //
+        // INVARIANT (§11.4a Cloud Relay): a remote backend must NEVER receive ungated
+        // content. The forbidden facts are exactly the ungated/future spoilers, so we
+        // only ever disclose their verbatim text to a LOCAL backend (it stays on the
+        // device). For Cloud Relay we send a neutral instruction with no spoiler text.
+        let repair_system = if self.backend.is_remote() {
+            format!(
+                "{system}\n\nIMPORTANT: Your previous reply drifted into events beyond \
+                 where the reader has read. Do NOT speculate about, reveal, or imply any \
+                 future outcome — answer using ONLY what you already know."
+            )
+        } else {
+            let forbidden_topics: Vec<String> = first
+                .claims
+                .iter()
+                .filter(|c| c.verdict == "violation")
+                .filter_map(|c| c.matched_fact_id)
+                .filter_map(|fid| forbidden.iter().find(|f| f.id == fid))
+                .map(|f| f.text.clone())
+                .collect();
+            format!(
+                "{system}\n\nIMPORTANT: You do NOT yet know any of the following — do not \
+                 reference or imply them: {}",
+                forbidden_topics.join("; ")
+            )
+        };
         let redraft = self
             .backend
             .complete(&repair_system, message, &GenOptions::default())?;
