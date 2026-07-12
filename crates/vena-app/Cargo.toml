@@ -36,6 +36,7 @@ reqwest = { workspace = true }
 regex = { workspace = true }
 tracing = { workspace = true }
 tiny_http = "0.12"
+sha2 = { workspace = true }
 
 # Tauri-only (optional; enabled by the `tauri` feature).
 tauri = { version = "2", features = [], optional = true }

@@ -1,0 +1,181 @@
+/* Vena design system — extracted from the canonical Vena App.dc.html / Vena Mobile.dc.html.
+   Neo-brutalist print/ledger: cream paper + dot grid, heavy keylines, red primary /
+   teal secondary, condensed all-caps display with offset shadows, monospace metadata,
+   striped progress, stamp badges. Four themes: light (default) / dark / sepia / oled. */
+
+@import "tailwindcss";
+
+/* Bundled fonts — offline-first, nothing fetched at runtime. */
+@import "@fontsource/anton/index.css";
+@import "@fontsource/oswald/400.css";
+@import "@fontsource/oswald/500.css";
+@import "@fontsource/oswald/600.css";
+@import "@fontsource/oswald/700.css";
+@import "@fontsource/source-serif-4/400.css";
+@import "@fontsource/source-serif-4/600.css";
+@import "@fontsource/source-serif-4/400-italic.css";
+@import "@fontsource/ibm-plex-mono/400.css";
+@import "@fontsource/ibm-plex-mono/500.css";
+@import "@fontsource/ibm-plex-mono/600.css";
+
+/* ---- canonical tokens (verbatim values from the .dc.html) ---- */
+:root, [data-vtheme="light"] {
+  --paper: #f6f3ec; --panel: #fffdf7; --ink: #15151a; --inv: #f6f3ec;
+  --mut: rgba(21, 21, 26, .58); --mut2: rgba(21, 21, 26, .4);
+  --red: #dd3427; --cyan: #0b9e9e;
+  --shdw: rgba(21, 21, 26, .16); --dot: rgba(21, 21, 26, .5);
+  --bub: #ffffff; --scanc: transparent;
+  --sil: #141418; --silfg: #31313c; --hatch: rgba(21, 21, 26, .05);
+}
+[data-vtheme="dark"] {
+  --paper: #0f0f13; --panel: #17171d; --ink: #eceade; --inv: #0f0f13;
+  --mut: rgba(236, 234, 222, .6); --mut2: rgba(236, 234, 222, .4);
+  --red: #ff5044; --cyan: #2adfdf;
+  --shdw: rgba(0, 0, 0, .55); --dot: rgba(236, 234, 222, .45);
+  --bub: #1d1d25; --scanc: rgba(0, 0, 0, .16);
+  --sil: #08080b; --silfg: #26262e; --hatch: rgba(236, 234, 222, .05);
+}
+[data-vtheme="sepia"] {
+  --paper: #efe4cc; --panel: #f7eedb; --ink: #392e22; --inv: #f7eedb;
+  --mut: rgba(57, 46, 34, .6); --mut2: rgba(57, 46, 34, .42);
+  --red: #c03a28; --cyan: #0b8f8f;
+  --shdw: rgba(57, 46, 34, .18); --dot: rgba(57, 46, 34, .5);
+  --bub: #fdf6e7; --scanc: transparent;
+  --sil: #191410; --silfg: #332a20; --hatch: rgba(57, 46, 34, .06);
+}
+[data-vtheme="oled"] {
+  --paper: #000000; --panel: #0b0b0e; --ink: #e9e7da; --inv: #000000;
+  --mut: rgba(233, 231, 218, .62); --mut2: rgba(233, 231, 218, .4);
+  --red: #ff5044; --cyan: #2adfdf;
+  --shdw: rgba(255, 255, 255, .08); --dot: rgba(233, 231, 218, .4);
+  --bub: #121216; --scanc: rgba(255, 255, 255, .02);
+  --sil: #050507; --silfg: #1c1c22; --hatch: rgba(233, 231, 218, .05);
+}
+
+html, body, #root { height: 100%; margin: 0; padding: 0; }
+body {
+  background: var(--paper);
+  color: var(--ink);
+  font-family: "Oswald", system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+a { color: var(--red); }
+a:hover { color: color-mix(in srgb, var(--red) 78%, black); }
+* { box-sizing: border-box; }
+
+/* ---- typography roles ---- */
+.f-display { font-family: "Anton", "Oswald", sans-serif; text-transform: uppercase; letter-spacing: .01em; }
+.f-cond    { font-family: "Oswald", sans-serif; text-transform: uppercase; letter-spacing: .06em; }
+.f-serif   { font-family: "Source Serif 4", Georgia, serif; }
+.f-mono    { font-family: "IBM Plex Mono", ui-monospace, monospace; }
+
+/* Display headline with the canonical offset shadow. */
+.v-headline {
+  font-family: "Anton", sans-serif;
+  text-transform: uppercase;
+  line-height: .95;
+  text-shadow: 3px 3px 0 var(--shdw);
+}
+
+/* ---- surfaces & keylines ---- */
+.v-dotgrid {
+  background-image: radial-gradient(circle, var(--dot) 1px, transparent 1.2px);
+  background-size: 22px 22px;
+}
+.v-panel  { background: var(--panel); border: 2px solid var(--ink); }
+.v-panel-shadow { background: var(--panel); border: 2px solid var(--ink); box-shadow: 6px 6px 0 var(--shdw); }
+.v-keyline { border: 2px solid var(--ink); }
+.v-hatch {
+  background-image: repeating-linear-gradient(45deg, var(--hatch) 0 8px, transparent 8px 16px);
+}
+
+/* ---- buttons ---- */
+.v-btn {
+  font-family: "Oswald", sans-serif; text-transform: uppercase; letter-spacing: .08em;
+  font-weight: 600; border: 2px solid var(--ink); background: var(--panel); color: var(--ink);
+  padding: .5rem 1rem; cursor: pointer; box-shadow: 3px 3px 0 var(--shdw);
+  transition: transform .06s ease, box-shadow .06s ease;
+  user-select: none;
+}
+.v-btn:hover { transform: translate(-1px, -1px); box-shadow: 4px 4px 0 var(--shdw); }
+.v-btn:active { transform: translate(2px, 2px); box-shadow: 0 0 0 var(--shdw); }
+.v-btn:disabled { opacity: .45; cursor: not-allowed; transform: none; }
+.v-btn-red  { background: var(--red); color: #fff; border-color: var(--ink); }
+.v-btn-cyan { background: var(--cyan); color: #fff; border-color: var(--ink); }
+.v-btn-ink  { background: var(--ink); color: var(--inv); }
+
+/* ---- stamp badges (rotated, bordered, like a rubber stamp) ---- */
+.v-stamp {
+  display: inline-block; font-family: "Oswald", sans-serif; font-weight: 700;
+  text-transform: uppercase; letter-spacing: .1em; font-size: .62rem;
+  border: 2px solid currentColor; padding: .1rem .45rem; transform: rotate(-6deg);
+}
+.v-stamp-red  { color: var(--red); }
+.v-stamp-cyan { color: var(--cyan); }
+@keyframes vh-slam {
+  0% { transform: scale(3) rotate(-18deg); opacity: 0; }
+  60% { transform: scale(.9) rotate(-10deg); opacity: 1; }
+  100% { transform: scale(1) rotate(-12deg); opacity: 1; }
+}
+.v-stamp-slam { animation: vh-slam .5s cubic-bezier(.2, .8, .3, 1.2) both; }
+
+/* ---- striped progress bars ---- */
+@keyframes vh-stripe { to { background-position: 24px 0; } }
+.v-progress { height: 12px; border: 2px solid var(--ink); background: var(--panel); position: relative; overflow: hidden; }
+.v-progress > span {
+  display: block; height: 100%;
+  background: repeating-linear-gradient(45deg, var(--red) 0 8px, color-mix(in srgb, var(--red) 70%, var(--panel)) 8px 16px);
+  background-size: 24px 24px;
+}
+.v-progress.animate > span { animation: vh-stripe .6s linear infinite; }
+.v-progress.cyan > span {
+  background: repeating-linear-gradient(45deg, var(--cyan) 0 8px, color-mix(in srgb, var(--cyan) 70%, var(--panel)) 8px 16px);
+  background-size: 24px 24px;
+}
+
+/* ---- mono metadata rows ---- */
+.v-meta { font-family: "IBM Plex Mono", monospace; font-size: .7rem; letter-spacing: .02em; color: var(--mut); text-transform: uppercase; }
+
+/* ---- canonical animations ---- */
+@keyframes vh-fade { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+.v-fade { animation: vh-fade .28s ease both; }
+@keyframes vh-shimmer { 0%, 100% { opacity: .35; } 50% { opacity: 1; } }
+.v-shimmer { animation: vh-shimmer 1.2s ease-in-out infinite; }
+@keyframes vh-blink { 0%, 100% { opacity: 1; } 50% { opacity: .25; } }
+.v-blink { animation: vh-blink 1s step-end infinite; }
+@keyframes vh-toast {
+  0% { opacity: 0; transform: translate(-50%, 14px); }
+  8% { opacity: 1; transform: translate(-50%, 0); }
+  88% { opacity: 1; transform: translate(-50%, 0); }
+  100% { opacity: 0; transform: translate(-50%, -8px); }
+}
+.v-toast {
+  position: fixed; left: 50%; bottom: 28px; transform: translateX(-50%);
+  background: var(--ink); color: var(--inv); border: 2px solid var(--ink);
+  padding: .5rem 1rem; font-family: "Oswald", sans-serif; text-transform: uppercase;
+  letter-spacing: .08em; font-size: .75rem; z-index: 90;
+  animation: vh-toast 2.6s ease both; box-shadow: 4px 4px 0 var(--shdw);
+}
+@keyframes vh-sweep { 0% { top: -14%; } 100% { top: 114%; } }
+@keyframes vh-flicker {
+  0%,100% {opacity:1} 41% {opacity:1} 42% {opacity:.55} 43% {opacity:1}
+  44% {opacity:.8} 45% {opacity:1} 78% {opacity:1} 79% {opacity:.7} 80% {opacity:1}
+}
+
+/* ---- character silhouettes (unmet cast: "still ink") ---- */
+.v-silhouette { background: var(--sil); color: var(--silfg); }
+
+/* ---- inked-out (redacted) text ---- */
+.v-inked {
+  background: var(--ink); color: var(--ink); text-decoration: none;
+  user-select: none; padding: 0 .2em;
+}
+
+/* ---- book text (canon is sacred — pristine serif column) ---- */
+.v-canon { font-family: "Source Serif 4", Georgia, serif; }
+.v-canon p { margin: 0 0 1em; }
+
+/* ---- scrollbar in the house style ---- */
+*::-webkit-scrollbar { width: 10px; height: 10px; }
+*::-webkit-scrollbar-thumb { background: var(--mut2); border: 2px solid var(--paper); }
+*::-webkit-scrollbar-track { background: transparent; }

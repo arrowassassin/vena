@@ -456,7 +456,6 @@ fn report_leaked(reply: &str, forbidden: &[String]) -> bool {
     forbidden.iter().any(|t| l.contains(&t.to_lowercase()))
 }
 
-
 /// Export the EXACT gated prompts (stages 1–2 via the production `gate_and_assemble`)
 /// so an out-of-process model (or a person) can answer them. One JSON per line:
 /// {idx, character, reader_chapter, system, user}.

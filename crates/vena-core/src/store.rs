@@ -182,6 +182,13 @@ impl Store {
         Ok(())
     }
 
+    /// Set the cover asset path (covers are generated/replaced; canon is untouched).
+    pub fn conn_execute_set_cover(&self, id: i64, cover: &str) -> Result<()> {
+        self.conn
+            .execute("UPDATE story SET cover=?2 WHERE id=?1", params![id, cover])?;
+        Ok(())
+    }
+
     pub fn set_book_meta(&self, id: i64, meta_json: &str) -> Result<()> {
         self.conn.execute(
             "UPDATE story SET meta_json=?2 WHERE id=?1",

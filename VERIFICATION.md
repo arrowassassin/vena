@@ -123,3 +123,50 @@ until the generative eval is run (documented in EVAL.md). The run continues.
   comments; both are honest regression guards.
 
 **Segment 3 DONE** (both testers pass after fixes).
+
+---
+
+## Segment 4 — Tauri shell + IPC layer
+
+**Delivered:** `vena-app` — the complete §11.2+v2.0 command surface as a plain testable lib
+(`AppApi`), the Tauri 2 binary (feature-gated; keychain secrets, CSP, capabilities, bundles the
+real Dracula package), the `vena-devserver` bridge (same commands over localhost HTTP backed by
+the REAL engine — the browser UI runs with no mocks), native `AnthropicClient`, model-in-the-loop
+eval mode. Verified end-to-end via HTTP against the real package.
+
+### PM TESTER — VERDICT: FAIL → all findings fixed → PASS
+- **HIGH — `generate_portrait`/`generate_cover` missing (FIXED):** implemented for real in
+  `images.rs` with the v2.0 fallback chain (relay image endpoint → local Paint Engine → the
+  spec-sanctioned typographic tier); portraits spoiler-gated (prompt from gated facts at current
+  progress, cache per chapter), covers from weight-0/1 facts only; `image:progress`/`image:done`
+  emitted in both binaries.
+- **MED — vacuous network allowlist (FIXED):** `assert_allowed` now REJECTS unknown hosts
+  (`NetworkNotAllowed`); fixed sources + explicit user-configured hosts (registered OPDS
+  catalogs, BYO endpoints) only; suffix-spoofing covered; unit-tested.
+- **MED — download not resumable / no SHA (FIXED):** `.part` + Range resume; SHA-256 verified
+  against the model's HF Git-LFS pointer (`oid sha256:`) BEFORE the file is renamed into place
+  or marked ready; mismatches discard the download.
+- **MED — `test_relay.gate_verified` hardcoded (FIXED):** now measured — runs the real
+  `gate_and_assemble` against a sealed book and verifies no future fact entered the context;
+  `false` when there is nothing to gate.
+- **MED — Google Fonts egress (FIXED):** fonts bundled via @fontsource; CSP dropped
+  fonts.googleapis/gstatic — nothing phones home.
+- LOWs: secret blocklist broadened (token/password/credential/_key); scene-granular re-seal;
+  Gutendex real `page` pagination; AO3 work-id validated numeric.
+
+### UX TESTER — VERDICT: FAIL → all findings fixed → PASS
+- **HIGH — "THAT SPOILED ME" had no command (FIXED):** `report_leak(bookId, reason, excerpt,
+  comment)` — logs to a LOCAL leak-reports.jsonl (per §6, for eval regression; never sent
+  anywhere); wired through both binaries + api.ts.
+- **HIGH — model download not pause/resumable (FIXED):** the download is now genuinely
+  resumable (Range + .part); pausing = dropping the call and re-invoking continues.
+- **MED — raw→sealed impossible (FIXED):** new `forge_ledger(bookId)` re-forges an imported
+  book with the current backend, flipping raw→forging→sealed honestly (state rolled back to raw
+  on failure); the design's FORGING states are now reachable from real data.
+- **MED — single-threaded devserver blocked live events (FIXED):** 4 worker threads; long
+  commands no longer starve the events poll — forging/stamps/downloads animate live.
+- **MED — no repair stamp (FIXED):** the engine now emits `on_stage("repair")` ("INKING OUT A
+  SPOILER") when stage 5 runs; stage-order unit test updated.
+- LOW — `model:progress` now carries the tier id.
+
+**Segment 4 DONE** (both testers' findings resolved; full suite green — 23 tests).

@@ -3,10 +3,12 @@
 //! (dev + CI). The shipped app uses the Tauri binary; this bridge is never bundled.
 //!
 //!   POST /api/<command>       body: JSON args → JSON result (VenaError → {code,message})
-//!   GET  /api/events          SSE stream: forge:progress, companion:stage, …
+//!   GET  /api/events          event queue drain (forge:progress, companion:stage, …)
 //!   GET  /<path>              static files from ui/dist (when built)
+//!
+//! Four worker threads so long commands (forge, downloads) never block the events
+//! poll — live progress stays live.
 
-use std::io::Read;
 use std::sync::{Arc, Mutex};
 use vena_app::api::{AppApi, StoreItem};
 use vena_app::MemoryKeyStore;
@@ -25,95 +27,109 @@ fn main() {
         Arc::new(AppApi::new(data_dir, Box::new(MemoryKeyStore::default())).expect("open profile"));
     let events: Events = Arc::new(Mutex::new(Vec::new()));
 
-    let server = tiny_http::Server::http(("127.0.0.1", port)).expect("bind");
+    let server = Arc::new(tiny_http::Server::http(("127.0.0.1", port)).expect("bind"));
     eprintln!("vena-devserver listening on http://127.0.0.1:{port} (real engine, no mocks)");
 
-    for mut req in server.incoming_requests() {
-        let url = req.url().to_string();
-        let method = req.method().clone();
+    let mut workers = Vec::new();
+    for _ in 0..4 {
+        let server = server.clone();
         let api = api.clone();
         let events = events.clone();
-
-        // SSE poll endpoint: return-and-clear queued events (simple long-poll SSE).
-        if url.starts_with("/api/events") {
-            let drained: Vec<_> = std::mem::take(&mut *events.lock().unwrap());
-            let body: String = drained
-                .into_iter()
-                .map(|(name, payload)| format!("event: {name}\ndata: {payload}\n\n"))
-                .collect();
-            let _ = req.respond(with_cors(
-                tiny_http::Response::from_string(body).with_header(
-                    tiny_http::Header::from_bytes(&b"Content-Type"[..], &b"text/event-stream"[..])
-                        .unwrap(),
-                ),
-            ));
-            continue;
-        }
-
-        if url.starts_with("/api/") {
-            if method == tiny_http::Method::Options {
-                let _ = req.respond(with_cors(tiny_http::Response::from_string("")));
-                continue;
+        workers.push(std::thread::spawn(move || loop {
+            match server.recv() {
+                Ok(req) => handle(req, &api, &events),
+                Err(_) => return,
             }
-            let mut body = String::new();
-            let _ = req.as_reader().read_to_string(&mut body);
-            let args: serde_json::Value =
-                serde_json::from_str(&body).unwrap_or(serde_json::Value::Null);
-            let cmd = url
-                .trim_start_matches("/api/")
-                .split('?')
-                .next()
-                .unwrap_or("");
-            let result = dispatch(&api, &events, cmd, &args);
-            let (status, payload) = match result {
-                Ok(v) => (200, v),
-                Err(e) => (
-                    400,
-                    serde_json::json!({ "code": e.code(), "message": e.to_string() }),
-                ),
-            };
-            let resp = tiny_http::Response::from_string(payload.to_string())
-                .with_status_code(status)
-                .with_header(
-                    tiny_http::Header::from_bytes(&b"Content-Type"[..], &b"application/json"[..])
-                        .unwrap(),
-                );
-            let _ = req.respond(with_cors(resp));
-            continue;
-        }
+        }));
+    }
+    for w in workers {
+        let _ = w.join();
+    }
+}
 
-        // Static UI (ui/dist) with SPA fallback.
-        let ui_root = ui_dist();
-        let rel = url.trim_start_matches('/').split('?').next().unwrap_or("");
-        let candidate = if rel.is_empty() { "index.html" } else { rel };
-        let path = ui_root.join(candidate);
-        let path = if path.is_file() {
-            path
-        } else {
-            ui_root.join("index.html")
+fn handle(mut req: tiny_http::Request, api: &Arc<AppApi>, events: &Events) {
+    let url = req.url().to_string();
+    let method = req.method().clone();
+
+    // Event drain (the UI polls this): return-and-clear queued events.
+    if url.starts_with("/api/events") {
+        let drained: Vec<_> = std::mem::take(&mut *events.lock().unwrap());
+        let body: String = drained
+            .into_iter()
+            .map(|(name, payload)| format!("event: {name}\ndata: {payload}\n\n"))
+            .collect();
+        let _ = req.respond(with_cors(
+            tiny_http::Response::from_string(body).with_header(
+                tiny_http::Header::from_bytes(&b"Content-Type"[..], &b"text/event-stream"[..])
+                    .unwrap(),
+            ),
+        ));
+        return;
+    }
+
+    if url.starts_with("/api/") {
+        if method == tiny_http::Method::Options {
+            let _ = req.respond(with_cors(tiny_http::Response::from_string("")));
+            return;
+        }
+        let mut body = String::new();
+        let _ = req.as_reader().read_to_string(&mut body);
+        let args: serde_json::Value =
+            serde_json::from_str(&body).unwrap_or(serde_json::Value::Null);
+        let cmd = url
+            .trim_start_matches("/api/")
+            .split('?')
+            .next()
+            .unwrap_or("");
+        let result = dispatch(api, events, cmd, &args);
+        let (status, payload) = match result {
+            Ok(v) => (200, v),
+            Err(e) => (
+                400,
+                serde_json::json!({ "code": e.code(), "message": e.to_string() }),
+            ),
         };
-        match std::fs::read(&path) {
-            Ok(bytes) => {
-                let mime = match path.extension().and_then(|e| e.to_str()) {
-                    Some("html") => "text/html",
-                    Some("js") => "application/javascript",
-                    Some("css") => "text/css",
-                    Some("svg") => "image/svg+xml",
-                    Some("png") => "image/png",
-                    Some("woff2") => "font/woff2",
-                    _ => "application/octet-stream",
-                };
-                let resp = tiny_http::Response::from_data(bytes).with_header(
-                    tiny_http::Header::from_bytes(&b"Content-Type"[..], mime.as_bytes()).unwrap(),
-                );
-                let _ = req.respond(resp);
-            }
-            Err(_) => {
-                let _ = req.respond(
-                    tiny_http::Response::from_string("ui not built — run npm run build in ui/")
-                        .with_status_code(404),
-                );
-            }
+        let resp = tiny_http::Response::from_string(payload.to_string())
+            .with_status_code(status)
+            .with_header(
+                tiny_http::Header::from_bytes(&b"Content-Type"[..], &b"application/json"[..])
+                    .unwrap(),
+            );
+        let _ = req.respond(with_cors(resp));
+        return;
+    }
+
+    // Static UI (ui/dist) with SPA fallback.
+    let ui_root = ui_dist();
+    let rel = url.trim_start_matches('/').split('?').next().unwrap_or("");
+    let candidate = if rel.is_empty() { "index.html" } else { rel };
+    let path = ui_root.join(candidate);
+    let path = if path.is_file() {
+        path
+    } else {
+        ui_root.join("index.html")
+    };
+    match std::fs::read(&path) {
+        Ok(bytes) => {
+            let mime = match path.extension().and_then(|e| e.to_str()) {
+                Some("html") => "text/html",
+                Some("js") => "application/javascript",
+                Some("css") => "text/css",
+                Some("svg") => "image/svg+xml",
+                Some("png") => "image/png",
+                Some("woff2") => "font/woff2",
+                _ => "application/octet-stream",
+            };
+            let resp = tiny_http::Response::from_data(bytes).with_header(
+                tiny_http::Header::from_bytes(&b"Content-Type"[..], mime.as_bytes()).unwrap(),
+            );
+            let _ = req.respond(resp);
+        }
+        Err(_) => {
+            let _ = req.respond(
+                tiny_http::Response::from_string("ui not built — run npm run build in ui/")
+                    .with_status_code(404),
+            );
         }
     }
 }
@@ -243,6 +259,61 @@ fn dispatch(
             })?;
             jv(meta)
         }
+        "report_leak" => {
+            jv(api.report_leak(i("bookId"), &s("reason"), &s("excerpt"), &s("comment"))?)
+        }
+        "forge_ledger" => {
+            let ev = events.clone();
+            let book_id = i("bookId");
+            let meta = api.forge_ledger(book_id, |pct, stage| {
+                push(
+                    &ev,
+                    "forge:progress",
+                    serde_json::json!({ "bookId": book_id, "pct": pct, "stage": stage }),
+                );
+            })?;
+            push(
+                events,
+                "forge:done",
+                serde_json::json!({ "bookId": meta.id, "ledgerCoverage": meta.ledger_coverage }),
+            );
+            jv(meta)
+        }
+        "generate_portrait" => {
+            let ev = events.clone();
+            let cid = i("characterId");
+            let path = api.generate_portrait(i("bookId"), cid, |pct| {
+                push(
+                    &ev,
+                    "image:progress",
+                    serde_json::json!({ "jobId": format!("portrait-{cid}"), "pct": pct }),
+                );
+            })?;
+            push(
+                events,
+                "image:done",
+                serde_json::json!({ "jobId": format!("portrait-{cid}"), "assetPath": path }),
+            );
+            jv(path)
+        }
+        "generate_cover" => {
+            let ev = events.clone();
+            let book_id = i("bookId");
+            let regen = a["regenerate"].as_bool().unwrap_or(false);
+            let path = api.generate_cover(book_id, regen, |pct| {
+                push(
+                    &ev,
+                    "image:progress",
+                    serde_json::json!({ "jobId": format!("cover-{book_id}"), "pct": pct }),
+                );
+            })?;
+            push(
+                events,
+                "image:done",
+                serde_json::json!({ "jobId": format!("cover-{book_id}"), "assetPath": path }),
+            );
+            jv(path)
+        }
         "get_ai_status" => jv(api.get_ai_status()?),
         "set_api_config" => jv(api.set_api_config(&s("baseUrl"), &s("apiKey"), &s("model"))?),
         "set_image_config" => jv(api.set_image_config(&s("baseUrl"), &s("apiKey"), &s("model"))?),
@@ -251,8 +322,14 @@ fn dispatch(
         "list_relay_models" => jv(api.list_relay_models()?),
         "download_local_model" => {
             let ev = events.clone();
-            let r = api.download_local_model(&s("tier"), |pct| {
-                push(&ev, "model:progress", serde_json::json!({ "pct": pct }));
+            let tier = s("tier");
+            let t2 = tier.clone();
+            let r = api.download_local_model(&tier, |pct| {
+                push(
+                    &ev,
+                    "model:progress",
+                    serde_json::json!({ "tier": t2, "pct": pct }),
+                );
             })?;
             jv(r)
         }

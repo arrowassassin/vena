@@ -4,6 +4,7 @@
 //! a thin set of `#[tauri::command]` wrappers over `AppApi`.
 
 pub mod api;
+pub mod images;
 pub mod keystore;
 pub mod net;
 

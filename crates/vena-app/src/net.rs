@@ -2,6 +2,10 @@
 //! (a) user-initiated store/catalog downloads (Gutendex, Standard Ebooks OPDS, user
 //! OPDS, AO3), (b) Hugging Face model downloads, (c) the user's own BYO API endpoint.
 //! No telemetry, no update pings. Reading data never leaves the device.
+//!
+//! `assert_allowed` ENFORCES the allowlist: fixed known sources are always allowed;
+//! any other host must be explicitly passed by the caller as a user-configured host
+//! (their OPDS catalogs / BYO endpoint). Unknown hosts are rejected.
 
 use serde::Deserialize;
 use std::io::Write;
@@ -16,22 +20,52 @@ fn client() -> reqwest::blocking::Client {
         .expect("http client")
 }
 
-/// Generic resumable streaming download with progress. Used for HF GGUF + book files.
+/// RESUMABLE streaming download. Partial data lands in `<dest>.part`; re-invocation
+/// continues with a Range request; the file is renamed into place only when complete
+/// (and, when a digest is supplied, SHA-256-verified).
 pub fn download_file(url: &str, dest: &Path, on_progress: &mut dyn FnMut(u32)) -> Result<()> {
-    assert_allowed(url)?;
-    let mut resp = client()
-        .get(url)
-        .send()
-        .map_err(|e| VenaError::Other(format!("download failed: {e}")))?;
-    if !resp.status().is_success() {
-        return Err(VenaError::Other(format!("download HTTP {}", resp.status())));
-    }
-    let total = resp.content_length().unwrap_or(0);
+    download_file_verified(url, dest, None, &[], on_progress)
+}
+
+pub fn download_file_verified(
+    url: &str,
+    dest: &Path,
+    expected_sha256: Option<&str>,
+    user_hosts: &[String],
+    on_progress: &mut dyn FnMut(u32),
+) -> Result<()> {
+    assert_allowed(url, user_hosts)?;
     if let Some(parent) = dest.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    let mut file = std::fs::File::create(dest)?;
-    let mut downloaded: u64 = 0;
+    let part = dest.with_extension("part");
+    let already: u64 = std::fs::metadata(&part).map(|m| m.len()).unwrap_or(0);
+
+    let mut reqb = client().get(url);
+    if already > 0 {
+        reqb = reqb.header("Range", format!("bytes={already}-"));
+    }
+    let mut resp = reqb
+        .send()
+        .map_err(|e| VenaError::Other(format!("download failed: {e}")))?;
+    let status = resp.status();
+    let resuming = status == reqwest::StatusCode::PARTIAL_CONTENT;
+    if !status.is_success() {
+        return Err(VenaError::Other(format!("download HTTP {status}")));
+    }
+    let remaining = resp.content_length().unwrap_or(0);
+    let total = if resuming {
+        already + remaining
+    } else {
+        remaining
+    };
+
+    let mut file = if resuming {
+        std::fs::OpenOptions::new().append(true).open(&part)?
+    } else {
+        std::fs::File::create(&part)?
+    };
+    let mut downloaded: u64 = if resuming { already } else { 0 };
     let mut buf = [0u8; 64 * 1024];
     loop {
         let n = std::io::Read::read(&mut resp, &mut buf)
@@ -42,41 +76,85 @@ pub fn download_file(url: &str, dest: &Path, on_progress: &mut dyn FnMut(u32)) -
         file.write_all(&buf[..n])?;
         downloaded += n as u64;
         if total > 0 {
-            on_progress(((downloaded * 100) / total).min(100) as u32);
+            on_progress(((downloaded * 100) / total).min(99) as u32);
         }
     }
+    drop(file);
+
+    // Integrity gate: verify BEFORE renaming into place / marking ready.
+    if let Some(expected) = expected_sha256 {
+        let actual = sha256_file(&part)?;
+        if !actual.eq_ignore_ascii_case(expected) {
+            let _ = std::fs::remove_file(&part);
+            return Err(VenaError::Other(format!(
+                "SHA-256 mismatch (expected {expected}, got {actual}) — download discarded"
+            )));
+        }
+    }
+    std::fs::rename(&part, dest)?;
     on_progress(100);
     Ok(())
 }
 
-/// Resolve a tier's GGUF to a Hugging Face direct URL and download it. Real; the
-/// sandbox blocks HF so this runs on the user's machine at first run.
+fn sha256_file(path: &Path) -> Result<String> {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    let mut f = std::fs::File::open(path)?;
+    let mut buf = [0u8; 128 * 1024];
+    loop {
+        let n = std::io::Read::read(&mut f, &mut buf)?;
+        if n == 0 {
+            break;
+        }
+        hasher.update(&buf[..n]);
+    }
+    Ok(hasher
+        .finalize()
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect())
+}
+
+/// Download a tier's GGUF from Hugging Face with REAL SHA-256 verification: the
+/// expected digest comes from the model's Git-LFS pointer (`oid sha256:<hex>`,
+/// served at /raw/), the blob downloads resumably, and it is verified before being
+/// renamed into place / marked ready (§11.4 plumbing).
 pub fn download_hf_gguf(model: &str, dir: &Path, on_progress: &mut dyn FnMut(u32)) -> Result<()> {
-    let url =
-        hf_gguf_url(model).ok_or_else(|| VenaError::Other(format!("no HF mapping for {model}")))?;
+    let (repo, file) = hf_repo_file(model)
+        .ok_or_else(|| VenaError::Other(format!("no HF mapping for {model}")))?;
+    let pointer_url = format!("https://huggingface.co/{repo}/raw/main/{file}");
+    let pointer = client()
+        .get(&pointer_url)
+        .send()
+        .and_then(|r| r.text())
+        .map_err(|e| VenaError::Other(format!("fetching LFS pointer: {e}")))?;
+    let expected = pointer
+        .lines()
+        .find_map(|l| l.strip_prefix("oid sha256:"))
+        .map(str::trim)
+        .map(str::to_string);
+
+    let url = format!("https://huggingface.co/{repo}/resolve/main/{file}?download=true");
     let dest = dir.join(format!("{model}.gguf"));
-    download_file(&url, &dest, on_progress)
+    download_file_verified(&url, &dest, expected.as_deref(), &[], on_progress)
 }
 
 /// The shipped Qwen3 family (§11.4). Bartowski GGUF repos are the community default.
-fn hf_gguf_url(model: &str) -> Option<String> {
-    let (repo, file) = match model {
-        m if m.contains("Qwen3-4B") => (
+fn hf_repo_file(model: &str) -> Option<(&'static str, &'static str)> {
+    match model {
+        m if m.contains("Qwen3-4B") => Some((
             "bartowski/Qwen_Qwen3-4B-Instruct-2507-GGUF",
             "Qwen_Qwen3-4B-Instruct-2507-Q4_K_M.gguf",
-        ),
+        )),
         m if m.contains("Qwen3-8B") => {
-            ("bartowski/Qwen_Qwen3-8B-GGUF", "Qwen_Qwen3-8B-Q4_K_M.gguf")
+            Some(("bartowski/Qwen_Qwen3-8B-GGUF", "Qwen_Qwen3-8B-Q4_K_M.gguf"))
         }
-        m if m.contains("Qwen3-14B") => (
+        m if m.contains("Qwen3-14B") => Some((
             "bartowski/Qwen_Qwen3-14B-GGUF",
             "Qwen_Qwen3-14B-Q4_K_M.gguf",
-        ),
-        _ => return None,
-    };
-    Some(format!(
-        "https://huggingface.co/{repo}/resolve/main/{file}?download=true"
-    ))
+        )),
+        _ => None,
+    }
 }
 
 // ---------- Store sources (§F4) ----------
@@ -99,9 +177,10 @@ struct GutendexAuthor {
     name: String,
 }
 
-/// Project Gutenberg via the Gutendex JSON API (§F4b). Returns (id,title,author,epub_url,cover).
+/// Project Gutenberg via the Gutendex JSON API (§F4b). `page` = real pagination.
 pub fn gutendex_search(
     query: &str,
+    page: u32,
 ) -> Result<
     Vec<(
         String,
@@ -111,8 +190,12 @@ pub fn gutendex_search(
         Option<String>,
     )>,
 > {
-    let url = format!("https://gutendex.com/books?search={}", urlencode(query));
-    assert_allowed(&url)?;
+    let url = format!(
+        "https://gutendex.com/books?search={}&page={}",
+        urlencode(query),
+        page.max(1)
+    );
+    assert_allowed(&url, &[])?;
     let resp = client()
         .get(&url)
         .send()
@@ -143,9 +226,13 @@ pub fn gutendex_search(
         .collect())
 }
 
-/// Fetch an OPDS feed (Standard Ebooks / user catalogs). Returns (id,title,author,acquire_url).
-pub fn opds_fetch(url: &str) -> Result<Vec<(String, String, Option<String>, Option<String>)>> {
-    assert_allowed(url)?;
+/// Fetch an OPDS feed. `user_hosts` = hosts of the user's registered catalogs; a
+/// feed on any other non-fixed host is refused (policy enforcement).
+pub fn opds_fetch(
+    url: &str,
+    user_hosts: &[String],
+) -> Result<Vec<(String, String, Option<String>, Option<String>)>> {
+    assert_allowed(url, user_hosts)?;
     let body = client()
         .get(url)
         .header("accept", "application/atom+xml")
@@ -158,11 +245,11 @@ pub fn opds_fetch(url: &str) -> Result<Vec<(String, String, Option<String>, Opti
 
 /// AO3 serves an EPUB per work officially — fetch that URL (user-initiated, §F4).
 pub fn ao3_epub_url(work_url: &str) -> Result<String> {
-    // AO3 download link form: /downloads/<id>/<slug>.epub — derive from the work id.
     let id = work_url
         .split("/works/")
         .nth(1)
         .and_then(|s| s.split(['/', '?']).next())
+        .filter(|s| !s.is_empty() && s.chars().all(|c| c.is_ascii_digit()))
         .ok_or_else(|| VenaError::Other("not an AO3 work URL".into()))?;
     Ok(format!(
         "https://archiveofourown.org/downloads/{id}/work.epub"
@@ -208,11 +295,8 @@ fn urlencode(s: &str) -> String {
         .collect()
 }
 
-/// Enforce the §11.2 network allowlist by host. Belt-and-suspenders to the Tauri
-/// capability config — a code-level check so "nothing phones home" is verifiable.
-fn assert_allowed(url: &str) -> Result<()> {
-    let host = url
-        .split("://")
+pub fn host_of(url: &str) -> String {
+    url.split("://")
         .nth(1)
         .unwrap_or(url)
         .split('/')
@@ -221,7 +305,13 @@ fn assert_allowed(url: &str) -> Result<()> {
         .split(':')
         .next()
         .unwrap_or("")
-        .to_ascii_lowercase();
+        .to_ascii_lowercase()
+}
+
+/// Enforce the §11.2 network allowlist. Fixed sources + explicit user-configured
+/// hosts only; anything else is refused with `NetworkNotAllowed`.
+fn assert_allowed(url: &str, user_hosts: &[String]) -> Result<()> {
+    let host = host_of(url);
     const ALLOWED_SUFFIXES: &[&str] = &[
         "gutendex.com",
         "gutenberg.org",
@@ -230,14 +320,37 @@ fn assert_allowed(url: &str) -> Result<()> {
         "huggingface.co",
         "hf.co",
     ];
-    // User-added OPDS hosts + the user's BYO endpoint are allowed at the call site
-    // (they pass through their own config); here we allow the fixed known sources.
-    if ALLOWED_SUFFIXES
+    let fixed = ALLOWED_SUFFIXES
         .iter()
-        .any(|s| host == *s || host.ends_with(&format!(".{s}")))
-    {
-        return Ok(());
+        .any(|s| host == *s || host.ends_with(&format!(".{s}")));
+    let user = user_hosts.iter().any(|h| h.eq_ignore_ascii_case(&host));
+    let local = matches!(host.as_str(), "localhost" | "127.0.0.1" | "::1" | "[::1]");
+    if fixed || user || local {
+        Ok(())
+    } else {
+        Err(VenaError::NetworkNotAllowed(host))
     }
-    // Allow user-configured hosts (OPDS / relay) — those are user-initiated by def.
-    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn allowlist_rejects_unknown_hosts() {
+        assert!(super::assert_allowed("https://gutendex.com/books?search=x", &[]).is_ok());
+        assert!(super::assert_allowed("https://www.gutenberg.org/e/1.epub", &[]).is_ok());
+        assert!(super::assert_allowed("https://evil.example.com/x", &[]).is_err());
+        // user-registered OPDS host is allowed
+        assert!(
+            super::assert_allowed("https://my.calibre.net/opds", &["my.calibre.net".into()])
+                .is_ok()
+        );
+        // suffix spoofing is rejected
+        assert!(super::assert_allowed("https://notgutenberg.org.evil.com/x", &[]).is_err());
+    }
+
+    #[test]
+    fn ao3_url_requires_numeric_work_id() {
+        assert!(super::ao3_epub_url("https://archiveofourown.org/works/12345").is_ok());
+        assert!(super::ao3_epub_url("https://archiveofourown.org/users/foo").is_err());
+    }
 }

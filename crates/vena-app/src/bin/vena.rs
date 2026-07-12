@@ -280,6 +280,96 @@ async fn import_ao3_link(
     .map_err(|e| VenaError::Other(e.to_string()))?
 }
 
+// ============================ Leak reports / forge / images ============================
+
+#[tauri::command]
+fn report_leak(
+    api: State<'_, Api>,
+    book_id: i64,
+    reason: String,
+    excerpt: String,
+    comment: String,
+) -> Result<(), VenaError> {
+    api.report_leak(book_id, &reason, &excerpt, &comment)
+}
+
+#[tauri::command]
+async fn forge_ledger(
+    app: tauri::AppHandle,
+    api: State<'_, Api>,
+    book_id: i64,
+) -> Result<BookMeta, VenaError> {
+    let api = api.inner().clone();
+    let handle = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let meta = api.forge_ledger(book_id, |pct, stage| {
+            let _ = handle.emit(
+                "forge:progress",
+                serde_json::json!({ "bookId": book_id, "pct": pct, "stage": stage }),
+            );
+        })?;
+        let _ = handle.emit(
+            "forge:done",
+            serde_json::json!({ "bookId": meta.id, "ledgerCoverage": meta.ledger_coverage }),
+        );
+        Ok(meta)
+    })
+    .await
+    .map_err(|e| VenaError::Other(e.to_string()))?
+}
+
+#[tauri::command]
+async fn generate_portrait(
+    app: tauri::AppHandle,
+    api: State<'_, Api>,
+    book_id: i64,
+    character_id: i64,
+) -> Result<String, VenaError> {
+    let api = api.inner().clone();
+    let handle = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let path = api.generate_portrait(book_id, character_id, |pct| {
+            let _ = handle.emit(
+                "image:progress",
+                serde_json::json!({ "jobId": format!("portrait-{character_id}"), "pct": pct }),
+            );
+        })?;
+        let _ = handle.emit(
+            "image:done",
+            serde_json::json!({ "jobId": format!("portrait-{character_id}"), "assetPath": path }),
+        );
+        Ok(path)
+    })
+    .await
+    .map_err(|e| VenaError::Other(e.to_string()))?
+}
+
+#[tauri::command]
+async fn generate_cover(
+    app: tauri::AppHandle,
+    api: State<'_, Api>,
+    book_id: i64,
+    regenerate: Option<bool>,
+) -> Result<String, VenaError> {
+    let api = api.inner().clone();
+    let handle = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let path = api.generate_cover(book_id, regenerate.unwrap_or(false), |pct| {
+            let _ = handle.emit(
+                "image:progress",
+                serde_json::json!({ "jobId": format!("cover-{book_id}"), "pct": pct }),
+            );
+        })?;
+        let _ = handle.emit(
+            "image:done",
+            serde_json::json!({ "jobId": format!("cover-{book_id}"), "assetPath": path }),
+        );
+        Ok(path)
+    })
+    .await
+    .map_err(|e| VenaError::Other(e.to_string()))?
+}
+
 // ============================ Models & settings ============================
 
 #[tauri::command]
@@ -394,6 +484,10 @@ fn main() {
             remove_opds_catalog,
             list_opds_catalogs,
             import_ao3_link,
+            report_leak,
+            forge_ledger,
+            generate_portrait,
+            generate_cover,
             get_ai_status,
             set_api_config,
             set_image_config,

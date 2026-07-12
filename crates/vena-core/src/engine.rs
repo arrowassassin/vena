@@ -86,6 +86,7 @@ impl Engine {
 
         // ---- STAGE 5: REPAIR ----
         if report_has_violation(&report) {
+            on_stage("repair"); // design stamp: "INKING OUT A SPOILER"
             report = self.repair(
                 store,
                 story_id,

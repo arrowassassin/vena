@@ -234,7 +234,7 @@ fn engine_standard_repairs_then_clean() {
         report.claims
     );
     assert!(!report.reply.to_lowercase().contains("lucy dies"));
-    assert_eq!(stages, vec!["gate", "compose", "verify"]);
+    assert_eq!(stages, vec!["gate", "compose", "verify", "repair"]);
 }
 
 #[test]

@@ -391,7 +391,8 @@ fn parse_spine(opf: &str) -> Vec<String> {
         .collect()
 }
 
-fn html_to_paragraphs(xhtml: &str) -> Vec<String> {
+/// Public: the app re-derives forge chapters from stored canon HTML (forge_ledger).
+pub fn html_to_paragraphs(xhtml: &str) -> Vec<String> {
     // Extract <body>…</body>, split on block tags, strip remaining tags.
     let body = between(xhtml, "<body", "</body>").unwrap_or_else(|| xhtml.to_string());
     let block = regex::Regex::new(r"(?i)</(p|div|h[1-6]|li|br)\s*>|<br\s*/?>").unwrap();

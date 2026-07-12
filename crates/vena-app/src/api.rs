@@ -106,6 +106,41 @@ impl AppApi {
         self.profile.lock().unwrap()
     }
 
+    /// Crate-visible store access for sibling modules (images.rs).
+    pub(crate) fn store_guard(&self) -> std::sync::MutexGuard<'_, Store> {
+        self.store()
+    }
+
+    pub(crate) fn assets_dir(&self) -> Result<PathBuf> {
+        let dir = self.data_dir.join("assets");
+        std::fs::create_dir_all(&dir)?;
+        Ok(dir)
+    }
+
+    /// (base_url, key, model) of the image endpoint, if configured (§11.4: one key
+    /// covers both by default — falls back to the chat relay key).
+    pub(crate) fn image_config(&self) -> Result<Option<(String, String, String)>> {
+        let store = self.store();
+        let base = self
+            .setting_opt(&store, K_IMAGE_BASE)
+            .or_else(|| self.setting_opt(&store, K_CLOUD_BASE));
+        let model = self.setting_or(&store, K_IMAGE_MODEL, "");
+        drop(store);
+        let key = self
+            .keystore
+            .get(KC_IMAGE_KEY)?
+            .or(self.keystore.get(KC_CLOUD_KEY)?);
+        match (base, key) {
+            (Some(b), Some(k)) if !model.is_empty() => Ok(Some((b, k, model))),
+            _ => Ok(None),
+        }
+    }
+
+    pub(crate) fn set_cover_asset(&self, book_id: i64, path: &Path) -> Result<()> {
+        let store = self.store();
+        store.conn_execute_set_cover(book_id, &path.to_string_lossy())
+    }
+
     /// Import the bundled flagship Dracula package once, so the shelf is never empty.
     fn seed_first_run(&self) -> Result<()> {
         let store = self.store();
@@ -213,7 +248,11 @@ impl AppApi {
     /// conversations/theories stamped after the new position are archived/reopened.
     pub fn set_progress(&self, book_id: i64, episode_seq: i64, scene_seq: i64) -> Result<()> {
         let store = self.store();
-        let rewound = store.set_progress(book_id, episode_seq, scene_seq)?;
+        // Scene-granular rewind detection: earlier episode OR earlier scene in the
+        // same episode both count as a rewind.
+        let (old_ep, old_scene) = store.get_progress(book_id)?;
+        store.set_progress(book_id, episode_seq, scene_seq)?;
+        let rewound = episode_seq < old_ep || (episode_seq == old_ep && scene_seq < old_scene);
         engine::resolve_theories(&store, book_id)?;
         if rewound && self.setting_bool_locked(&store, K_RESEAL, true) {
             store.reseal_after(book_id, episode_seq)?;
@@ -283,6 +322,97 @@ impl AppApi {
     pub fn run_probes(&self, book_id: i64, n: usize) -> Result<Vec<ProbeResult>> {
         let engine = self.build_engine()?;
         engine.run_probes(&self.store(), book_id, n)
+    }
+
+    /// "THAT SPOILED ME" (§6): one-tap leak report. Logs the transcript LOCALLY
+    /// (leak-reports.jsonl in the app data dir) for eval regression — never sent
+    /// anywhere. `reason` uses the leak taxonomy; `excerpt` is the offending line.
+    pub fn report_leak(
+        &self,
+        book_id: i64,
+        reason: &str,
+        excerpt: &str,
+        comment: &str,
+    ) -> Result<()> {
+        let progress = self.store().get_progress(book_id)?.0;
+        let entry = serde_json::json!({
+            "book_id": book_id,
+            "pinned_progress": progress,
+            "reason": reason,      // future | character | tone | other
+            "excerpt": excerpt,
+            "comment": comment,
+            "reported_at": chrono_now(),
+        });
+        let path = self.data_dir.join("leak-reports.jsonl");
+        use std::io::Write;
+        let mut f = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)?;
+        writeln!(f, "{entry}")?;
+        Ok(())
+    }
+
+    /// Forge (or re-forge) the ledger for an already-imported book — the path by
+    /// which a `raw` import becomes `sealed` once a backend exists. Streams
+    /// forge:progress and flips forge_state raw→forging→sealed honestly.
+    pub fn forge_ledger(
+        &self,
+        book_id: i64,
+        mut on_progress: impl FnMut(u32, &str),
+    ) -> Result<BookMeta> {
+        let backend = self.backend_for_forge()?; // NoBackend when none — honest
+                                                 // Mark forging.
+        {
+            let store = self.store();
+            let mut meta = store.book_meta_value(book_id)?;
+            meta["forge_state"] = serde_json::json!("forging");
+            store.set_book_meta(book_id, &meta.to_string())?;
+        }
+        on_progress(5, "parse");
+        // Rebuild chapters from stored canon (episode rows are the source of truth).
+        let chapters = {
+            let store = self.store();
+            let book = store.get_book(book_id)?;
+            let mut out = Vec::new();
+            for seq in 1..=book.episode_count {
+                let ep = store.get_episode(book_id, seq)?;
+                out.push(vena_forge::import::Chapter {
+                    seq,
+                    title: ep.title,
+                    paragraphs: html_to_paragraphs(&ep.content_html),
+                });
+            }
+            out
+        };
+        on_progress(15, "extract");
+        let ledger =
+            vena_forge::ledger::extract_with_model(backend.as_ref(), &chapters, |seq, total| {
+                on_progress(15 + (seq as u32 * 70 / total.max(1) as u32), "extract")
+            })
+            .map_err(|e| {
+                // Roll the state back to raw on failure — never claim a seal we don't have.
+                if let Ok(store) =
+                    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.store()))
+                {
+                    if let Ok(mut meta) = store.book_meta_value(book_id) {
+                        meta["forge_state"] = serde_json::json!("raw");
+                        let _ = store.set_book_meta(book_id, &meta.to_string());
+                    }
+                }
+                VenaError::Inference(e.to_string())
+            })?;
+        on_progress(90, "seal");
+        // Insert ledger rows into the existing story.
+        {
+            let store = self.store();
+            insert_ledger_rows(&store, book_id, &ledger)?;
+            let mut meta = store.book_meta_value(book_id)?;
+            meta["forge_state"] = serde_json::json!("sealed");
+            store.set_book_meta(book_id, &meta.to_string())?;
+        }
+        on_progress(100, "done");
+        self.store().get_book(book_id)
     }
 
     // ============================ Theories ============================
@@ -361,10 +491,26 @@ impl AppApi {
         self.store().set_setting(K_CHAT_MODE, mode)
     }
 
-    /// TEST THE RELAY (§11.4): a real round-trip that also confirms the gate ran
-    /// locally first (it always does — stage 1 is local SQL before any send).
+    /// TEST THE RELAY (§11.4): a real round-trip that also VERIFIES (not asserts)
+    /// the gate runs locally: it executes stage 1–2 against a sealed book and
+    /// checks that no future fact entered the assembled context before sending.
     pub fn test_relay(&self) -> Result<RelayTest> {
         let backend = self.cloud_backend()?;
+
+        // Measured gate check — false when there is no sealed book to gate.
+        let gate_verified = {
+            let store = self.store();
+            match store.list_books()?.into_iter().find(|b| b.fact_count > 0) {
+                Some(b) => {
+                    let progress = store.get_progress(b.id)?.0;
+                    let gated =
+                        vena_core::engine::gate_and_assemble(&store, b.id, None, "relay test")?;
+                    gated.visible.iter().all(|f| f.chapter_seq <= progress)
+                }
+                None => false,
+            }
+        };
+
         let t0 = std::time::Instant::now();
         let res = backend.complete(
             "You are a connectivity probe. Reply with the single word: PONG.",
@@ -380,13 +526,13 @@ impl AppApi {
             Ok(reply) => Ok(RelayTest {
                 ok: true,
                 latency_ms,
-                gate_verified: true,
+                gate_verified,
                 message: format!("relay ok — {}", reply.trim()),
             }),
             Err(e) => Ok(RelayTest {
                 ok: false,
                 latency_ms,
-                gate_verified: true,
+                gate_verified,
                 message: e.to_string(),
             }),
         }
@@ -460,7 +606,19 @@ impl AppApi {
 
     pub fn set_setting(&self, key: &str, value: &str) -> Result<()> {
         // Never allow a secret to be routed into the settings table.
-        if key.contains("api_key") || key.contains("secret") {
+        let k = key.to_ascii_lowercase();
+        if [
+            "api_key",
+            "apikey",
+            "secret",
+            "token",
+            "password",
+            "credential",
+        ]
+        .iter()
+        .any(|w| k.contains(w))
+            || k.ends_with("_key")
+        {
             return Err(VenaError::Other(
                 "secrets go to the keychain, not settings".into(),
             ));
@@ -527,7 +685,7 @@ impl AppApi {
 
         // Project Gutenberg (real Gutendex; may be offline-blocked — that's honest).
         if !query.is_empty() {
-            if let Ok(results) = crate::net::gutendex_search(query) {
+            if let Ok(results) = crate::net::gutendex_search(query, 1) {
                 for (id, title, author, epub, cover) in results.into_iter().take(20) {
                     items.push(StoreItem {
                         source: "gutenberg".into(),
@@ -548,7 +706,10 @@ impl AppApi {
     pub fn store_browse(&self, source: &str, cursor: Option<&str>) -> Result<Vec<StoreItem>> {
         match source {
             "gutenberg" => {
-                let results = crate::net::gutendex_search(cursor.unwrap_or("popular"))?;
+                let results = crate::net::gutendex_search(
+                    "",
+                    cursor.and_then(|c| c.parse().ok()).unwrap_or(1),
+                )?;
                 Ok(results
                     .into_iter()
                     .map(|(id, title, author, epub, cover)| StoreItem {
@@ -568,7 +729,7 @@ impl AppApi {
                 let url = self
                     .opds_url_for(source)
                     .unwrap_or_else(|| source.to_string());
-                let entries = crate::net::opds_fetch(&url)?;
+                let entries = crate::net::opds_fetch(&url, &self.user_hosts())?;
                 Ok(entries
                     .into_iter()
                     .map(|(id, title, author, acquire)| StoreItem {
@@ -669,6 +830,23 @@ impl AppApi {
                     "url": "https://standardebooks.org/feeds/opds/all"
                 })]
             })
+    }
+
+    /// Hosts of the user's registered catalogs + configured relay endpoints — the
+    /// user-initiated additions to the fixed network allowlist (§11.2).
+    pub(crate) fn user_hosts(&self) -> Vec<String> {
+        let store = self.store();
+        let mut hosts: Vec<String> = self
+            .opds_catalogs(&store)
+            .into_iter()
+            .filter_map(|c| c["url"].as_str().map(crate::net::host_of))
+            .collect();
+        for key in [K_CLOUD_BASE, K_LOCAL_BASE, K_IMAGE_BASE] {
+            if let Some(base) = self.setting_opt(&store, key) {
+                hosts.push(crate::net::host_of(&base));
+            }
+        }
+        hosts
     }
 
     fn opds_url_for(&self, id: &str) -> Option<String> {
@@ -781,6 +959,98 @@ impl AppApi {
     pub fn data_dir(&self) -> &Path {
         &self.data_dir
     }
+}
+
+fn chrono_now() -> String {
+    // ISO-ish UTC timestamp without a chrono dependency.
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    format!("unix:{secs}")
+}
+
+fn html_to_paragraphs(html: &str) -> Vec<String> {
+    vena_forge::import::html_to_paragraphs(html)
+}
+
+/// Insert a freshly-extracted ledger into an EXISTING story (forge_ledger path).
+/// Mirrors forge_to_db's name→id resolution, scoped to the story's ids.
+fn insert_ledger_rows(
+    store: &Store,
+    story_id: i64,
+    ledger: &vena_forge::ledger::Ledger,
+) -> Result<()> {
+    use std::collections::HashMap;
+    let mut char_id_by_name: HashMap<String, i64> = HashMap::new();
+    for c in store.list_characters(story_id)? {
+        char_id_by_name.insert(c.name.to_lowercase(), c.id);
+        for a in &c.aliases {
+            char_id_by_name.entry(a.to_lowercase()).or_insert(c.id);
+        }
+    }
+    for c in &ledger.characters {
+        if !char_id_by_name.contains_key(&c.name.to_lowercase()) {
+            let id = store.insert_character(
+                story_id,
+                &c.name,
+                &c.aliases,
+                &c.voice,
+                c.first_appearance_chapter,
+            )?;
+            char_id_by_name.insert(c.name.to_lowercase(), id);
+            for a in &c.aliases {
+                char_id_by_name.entry(a.to_lowercase()).or_insert(id);
+            }
+        }
+    }
+    for f in &ledger.facts {
+        let subject_char_id = f
+            .subject
+            .as_deref()
+            .and_then(|s| char_id_by_name.get(&s.to_lowercase()).copied());
+        let known_by: Vec<vena_core::model::KnownBy> = f
+            .known_by
+            .iter()
+            .filter_map(|(name, learned)| {
+                char_id_by_name
+                    .get(&name.to_lowercase())
+                    .map(|&cid| vena_core::model::KnownBy {
+                        character_id: cid,
+                        learned_at_chapter: *learned,
+                    })
+            })
+            .collect();
+        let fact_id = store.insert_fact(&vena_core::model::Fact {
+            id: 0,
+            story_id,
+            chapter_seq: f.chapter,
+            subject_char_id,
+            kind: f.kind,
+            text: f.text.clone(),
+            known_by: known_by.clone(),
+            spoiler_weight: f.spoiler_weight.clamp(0, 3),
+        })?;
+        // Derive chapter-stamped edges from relationship facts, citing the source.
+        if matches!(f.kind, vena_core::model::FactKind::Relationship) {
+            if let Some(subject_id) = subject_char_id {
+                for kb in &known_by {
+                    if kb.character_id != subject_id {
+                        store.add_edge(
+                            story_id,
+                            &format!("char:{subject_id}"),
+                            &format!("char:{}", kb.character_id),
+                            "knows",
+                            f.chapter,
+                            None,
+                            Some(fact_id),
+                        )?;
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 fn bundled_packages() -> Vec<PathBuf> {
