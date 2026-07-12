@@ -538,6 +538,7 @@
     origDidUpdate && origDidUpdate.call(this, prev);
     this._applyReaderText();
     this._applyDesignFacts();
+    this._applyDataPrivacy();
   };
 
   // -------------------------------------------- static demo copy → real data
@@ -592,6 +593,142 @@
       }
     });
   };
+
+  // ---------------- portable-data layer (SETTINGS ▸ DATA & PRIVACY) --------
+  // The canonical DATA & PRIVACY plate is static markup with only exportData /
+  // wipeBook anchors. We inject the portable-data actions (sync export/import,
+  // per-book theory share, forget conversations) into the design's own button
+  // column after render, cloning the plate's exact button style so it matches
+  // the house style. Idempotent + self-healing; the template is never edited.
+  P._venaDownload = function (filename, obj) {
+    try {
+      var blob = new Blob([JSON.stringify(obj, null, 2)], { type: "application/json" });
+      var a = document.createElement("a");
+      a.href = URL.createObjectURL(blob);
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      setTimeout(function () { try { URL.revokeObjectURL(a.href); a.remove(); } catch (e) {} }, 0);
+      return true;
+    } catch (err) { return false; }
+  };
+  P._venaExportSync = function () {
+    var self = this;
+    V.call("export_bundle", { scope: "sync" }).then(function (bundle) {
+      var n = ((bundle && bundle.books) || []).length;
+      if (self._venaDownload("vena-sync.json", bundle)) {
+        self._toast("EXPORTED · " + n + " BOOK" + (n === 1 ? "" : "S") + " · YOUR DATA, YOUR FILE");
+      } else self._toast("EXPORT FAILED — COULD NOT WRITE THE FILE");
+    }).catch(function (e) { self._up(e); });
+  };
+  P._venaImportInput = function () {
+    if (this.__venaImportEl) return this.__venaImportEl;
+    var self = this;
+    var inp = document.createElement("input");
+    inp.type = "file";
+    inp.accept = ".json,application/json";
+    inp.style.display = "none";
+    inp.addEventListener("change", function () {
+      var f = inp.files && inp.files[0];
+      inp.value = "";
+      if (!f) return;
+      var r = new FileReader();
+      r.onload = function () { self._venaImportText(String(r.result || "")); };
+      r.onerror = function () { self._toast("COULD NOT READ THAT FILE"); };
+      r.readAsText(f);
+    });
+    document.body.appendChild(inp);
+    this.__venaImportEl = inp;
+    return inp;
+  };
+  P._venaImportPick = function () { this._venaImportInput().click(); };
+  P._venaImportText = function (text) {
+    var self = this;
+    V.call("import_bundle", { json: text }).then(function (rep) {
+      rep = rep || {};
+      var parts = ["SYNCED"];
+      var mb = rep.matched_books || 0;
+      parts.push(mb + " BOOK" + (mb === 1 ? "" : "S"));
+      if (rep.progress_updated) parts.push(rep.progress_updated + " PROGRESS");
+      var ta = rep.theories_added || 0;
+      parts.push(ta + " THEOR" + (ta === 1 ? "Y" : "IES") + " ADDED");
+      var skipped = rep.skipped_not_on_shelf || [];
+      if (skipped.length) parts.push(skipped.length + " NOT ON SHELF");
+      self._toast(parts.join(" · ").slice(0, 88));
+      self._hydrate();
+    }).catch(function (e) { self._up(e); });
+  };
+  P._venaShareTheories = function () {
+    var self = this;
+    var ab = this._activeBookDef();
+    var bid = this._bookId();
+    if (!ab || bid == null) { this._toast("NO BOOK OPEN — NOTHING TO SHARE"); return; }
+    V.call("export_bundle", { bookId: bid, scope: "theories" }).then(function (bundle) {
+      var b = ((bundle && bundle.books) || [])[0] || {};
+      var n = (b.theories || []).length;
+      if (self._venaDownload("vena-theories-" + ab.id + ".json", bundle)) {
+        self._toast("SHARED · " + n + " THEOR" + (n === 1 ? "Y" : "IES") + " · PASS IT ROUND THE BOOK CLUB");
+      } else self._toast("SHARE FAILED — COULD NOT WRITE THE FILE");
+    }).catch(function (e) { self._up(e); });
+  };
+  P._venaForgetChats = function () {
+    var self = this;
+    var bid = this._bookId();
+    if (bid == null) { this._toast("NO BOOK OPEN"); return; }
+    if (this.__venaForgetArmed !== bid) {
+      this.__venaForgetArmed = bid;
+      this._toast("TAP AGAIN TO FORGET EVERY CONVERSATION FOR THIS BOOK");
+      setTimeout(function () { if (self.__venaForgetArmed === bid) self.__venaForgetArmed = null; }, 4000);
+      return;
+    }
+    this.__venaForgetArmed = null;
+    V.call("forget_conversations", { bookId: bid }).then(function () {
+      self._toast("CONVERSATIONS FORGOTTEN — THE BOOK, LEDGER & THEORIES REMAIN");
+    }).catch(function (e) { self._up(e); });
+  };
+  P._applyDataPrivacy = function () {
+    var self = this;
+    var btns = Array.prototype.slice.call(document.querySelectorAll("button"));
+    var exportBtn = null, burnBtn = null;
+    for (var i = 0; i < btns.length; i++) {
+      var t = (btns[i].textContent || "").trim();
+      if (!exportBtn && t.indexOf("EXPORT THEORIES") === 0) exportBtn = btns[i];
+      if (!burnBtn && t === "BURN THIS BOOK'S DATA") burnBtn = btns[i];
+    }
+    var anchor = exportBtn || burnBtn;
+    if (!anchor) return;
+    var row = anchor.parentElement;
+    if (!row) return;
+    var ab = this._activeBookDef();
+
+    if (!row.querySelector('[data-vena-dp="share"]')) {
+      var inkStyle = (exportBtn || burnBtn).getAttribute("style") || "";
+      var redStyle = (burnBtn || exportBtn).getAttribute("style") || "";
+      var cyanStyle = inkStyle.replace(/var\(--ink\)/g, "var(--cyan)");
+      var mk = function (label, style, key, onClick) {
+        var b = document.createElement("button");
+        b.textContent = label;
+        b.setAttribute("style", style);
+        b.setAttribute("data-vena-dp", key);
+        b.addEventListener("click", onClick);
+        row.appendChild(b);
+        return b;
+      };
+      mk("EXPORT MY DATA", inkStyle, "exportSync", function () { self._venaExportSync(); });
+      mk("IMPORT", inkStyle, "import", function () { self._venaImportPick(); });
+      mk("SHARE THEORIES", cyanStyle, "share", function () { self._venaShareTheories(); });
+      mk("FORGET OUR CONVERSATIONS", redStyle, "forget", function () { self._venaForgetChats(); });
+    }
+    var has = !!ab;
+    ["share", "forget"].forEach(function (key) {
+      var b = row.querySelector('[data-vena-dp="' + key + '"]');
+      if (!b) return;
+      b.disabled = !has;
+      b.style.opacity = has ? "1" : ".4";
+      b.style.cursor = has ? "pointer" : "not-allowed";
+    });
+  };
+
   P._applyReaderText = function () {
     if (this.state.screen !== "reader" || !this._readerPs || !this._readerPs.length) return;
     var key = "s" + this._readerSeq;
