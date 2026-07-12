@@ -253,6 +253,27 @@ fn engine_strict_redacts_immediately() {
 }
 
 #[test]
+fn redaction_strips_unmet_character_names() {
+    let (s, sid, _) = fixture();
+    s.set_progress(sid, 1, 0).unwrap();
+    // Both the draft AND the repair regen name characters the reader has not
+    // met — the final redacted reply must not contain those sentences.
+    let leak = "You will see: Van Helsing arrives and Lucy dies at the end.";
+    let backend = ScriptedInference::new(vec![leak.into(), leak.into()]);
+    let eng = Engine::new(Box::new(backend)).with_mode(GateMode::Standard);
+    let report = eng
+        .companion_turn(&s, sid, None, "Tell me plainly what comes.", &mut |_| {})
+        .unwrap();
+    assert!(report.redacted, "double leak must end in redaction");
+    let lower = report.reply.to_lowercase();
+    assert!(
+        !lower.contains("van helsing") && !lower.contains("lucy"),
+        "redacted reply still names unmet characters: {}",
+        report.reply
+    );
+}
+
+#[test]
 fn guard_fates_short_circuits_without_generation() {
     let (s, sid, _) = fixture();
     s.set_progress(sid, 6, 0).unwrap();

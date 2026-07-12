@@ -239,16 +239,26 @@ impl Engine {
 
     /// Redact the offending sentences and replace with an in-character deflection.
     fn redact(&self, mut report: TurnReport, character: &Option<Character>) -> TurnReport {
-        let violating: Vec<String> = report
-            .claims
-            .iter()
-            .filter(|c| c.verdict == "violation")
-            .map(|c| c.claim.clone())
-            .collect();
+        // unmet_character violations carry a synthetic claim ("names unmet
+        // character: X") that never text-matches the offending sentence, so the
+        // name itself is what must be scrubbed; every other violation is matched
+        // against the sentence text by similarity.
+        let mut violating: Vec<String> = Vec::new();
+        let mut leaked_names: Vec<String> = Vec::new();
+        for c in report.claims.iter().filter(|c| c.verdict == "violation") {
+            match c.claim.strip_prefix("names unmet character: ") {
+                Some(name) => leaked_names.push(name.to_string()),
+                None => violating.push(c.claim.clone()),
+            }
+        }
         let mut kept: Vec<String> = report
             .reply
             .split_inclusive(['.', '!', '?'])
-            .filter(|sent| !violating.iter().any(|v| verify::similarity(sent, v) >= 0.5))
+            .filter(|sent| {
+                !violating.iter().any(|v| verify::similarity(sent, v) >= 0.5)
+                    && verify::unmet_characters(sent, leaked_names.iter().map(String::as_str))
+                        .is_empty()
+            })
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty())
             .collect();
