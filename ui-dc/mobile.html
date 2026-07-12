@@ -2368,7 +2368,14 @@ class Component extends DCLogic {
         this.setState({ dl: { status: "downloading", pct: Math.max(dl.pct || 0, p.pct | 0), tier: dl.tier || p.tier } });
       }
     } else if (name === "forge:progress") {
-      if (p.pct != null) this.setState({ forgePct: p.pct | 0 });
+      // forgedThrough = highest chapter whose facts are committed (streaming forge)
+      var fupd = {};
+      if (p.pct != null) fupd.forgePct = p.pct | 0;
+      if (p.forgedThrough != null) {
+        fupd.forgedThrough = p.forgedThrough | 0;
+        if (p.bookId != null) (this._forgeState || (this._forgeState = {}))[p.bookId] = { forgedThrough: p.forgedThrough | 0 };
+      }
+      this.setState(fupd);
     } else if (name === "forge:done") {
       this._hydrate();
     }
@@ -2433,6 +2440,7 @@ class Component extends DCLogic {
       self.setState(upd);
     }).catch(function () {});
     V.call("get_image_status").then(function (is) { self._imageStatus = is; self.forceUpdate(); }).catch(function () {});
+    V.call("relay_presets").then(function (ps) { self._relayPresets = ps || []; self.forceUpdate(); }).catch(function () {});
     this._refreshAi();
   };
 
@@ -3164,6 +3172,57 @@ class Component extends DCLogic {
         .catch(function (e) { self.setState({ relayTestSt: "idle" }); self._up(e); });
     };
     if (this._relayMsg && st.relayTestSt === "done") v.relayTestResult = this._relayMsg;
+
+    // --- one-tap relay presets: pick a provider (pre-fills base+model), paste a
+    // key (or none for localhost), CONNECT runs configure_relay (fill+persist+TEST
+    // in one call). The manual base/key/model fields stay as the "custom" fallback.
+    var presets = this._relayPresets || [];
+    if (presets.length) {
+      var manualRelayTest = v.relayTest;
+      var provList = presets.map(function (p) {
+        return { k: p.id, label: String(p.name).toUpperCase(), url: p.base_url, model: p.default_model };
+      }).concat([{ k: "custom", label: "CUSTOM", url: "" }]);
+      v.provChips = provList.map(function (p) {
+        return {
+          label: p.label,
+          pressed: st.relayProv === p.k ? "true" : "false",
+          bg: st.relayProv === p.k ? "var(--ink)" : "transparent",
+          col: st.relayProv === p.k ? "var(--inv)" : "var(--ink)",
+          pick: function () {
+            self.setState({ relayProv: p.k, relayUrl: p.url || st.relayUrl, relayModel: p.model || st.relayModel, relayModels: [], relayFetchSt: "idle", relayTestSt: "idle" });
+          },
+        };
+      });
+      v.relayTestLabel = st.relayTestSt === "run" ? "CONNECTING…" : "CONNECT";
+      v.relayTest = function () {
+        var pr = provList.find(function (p) { return p.k === st.relayProv; });
+        if (!pr || pr.k === "custom") { manualRelayTest(); return; }
+        if (self.state.relayTestSt === "run") return;
+        self.setState({ relayTestSt: "run" });
+        V.call("configure_relay", { provider: pr.k, apiKey: self.state.relayKey || "", model: (self.state.relayModel || "").trim() })
+          .then(function (r) {
+            self._relayMsg = r.gate_verified
+              ? "GATE VERIFIED · " + (r.latency_ms || 0) + " MS"
+              : (String(r.message || "").toUpperCase() || "ROUND-TRIP " + (r.latency_ms || 0) + " MS");
+            if (r.ok) { self._buzz(); self.setState({ relayTestSt: "done", relayLatency: r.latency_ms || 0 }); self._refreshAi(); }
+            else { self.setState({ relayTestSt: "idle" }); self._toast(self._relayMsg); }
+          })
+          .catch(function (e) { self.setState({ relayTestSt: "idle" }); self._up(e); });
+      };
+    }
+
+    // --- streaming forge: companion usable through forgedThrough while forging
+    if (ab && ab.status === "forging") {
+      var ft = (this._forgeState && ab.nid != null && this._forgeState[ab.nid] && this._forgeState[ab.nid].forgedThrough) ||
+        (typeof st.forgedThrough === "number" ? st.forgedThrough : 0);
+      var fcount = meta ? (meta.fact_count || 0) : 0;
+      if (ft >= ch || fcount > 0) {
+        v.compReady = true;
+        v.compForging = false;
+        var thru = ft > 0 ? "CH." + this.roman(ft) : "THE OPENING";
+        if (v.compAuthorUp != null) v.compAuthorUp = v.compAuthorUp + " · READY THROUGH " + thru + ", STILL FORGING";
+      }
+    }
 
     // --- settings → set_setting (persisted by the engine)
     var setKV = function (key, value) {

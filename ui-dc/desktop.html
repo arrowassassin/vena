@@ -2810,7 +2810,7 @@ class Component extends DCLogic {
     this.storeFeatured = []; this.storeSE = []; this.storeGut = []; this.catalogBooks = [];
     this._vena = {
       books: [], theories: [], settings: null, ai: null, image: null,
-      wikiIdx: null, episode: null, forge: {}, storeOffline: false
+      wikiIdx: null, episode: null, forge: {}, storeOffline: false, relayPresets: []
     };
     this._turnSeq = 0;
     // demo-state honesty: no fake serial countdown (no pacing engine exists),
@@ -2829,6 +2829,8 @@ class Component extends DCLogic {
     }).catch(e => this._honest('SHELF UNREACHABLE', e));
 
     this._loadSettings();
+    // one-tap relay presets (§ configure_relay) — pre-fill base+model per provider
+    V.call('relay_presets').then(ps => { this._vena.relayPresets = ps || []; this.setState({}); }).catch(() => {});
     // the store's network sources are probed on first visit to THE STORE —
     // real calls that may honestly fail, so they are not fired at boot
     this._storeLoaded = false;
@@ -3231,10 +3233,13 @@ class Component extends DCLogic {
         });
         return;
       }
-      case 'forge:progress':
-        this._vena.forge[p.bookId] = { pct: p.pct | 0, stage: p.stage };
-        this.setState({ forgePct: p.pct | 0 });
+      case 'forge:progress': {
+        const prev = this._vena.forge[p.bookId] || {};
+        const ft = p.forgedThrough != null ? (p.forgedThrough | 0) : (prev.forgedThrough | 0);
+        this._vena.forge[p.bookId] = { pct: p.pct | 0, stage: p.stage, forgedThrough: ft };
+        this.setState({ forgePct: p.pct | 0, forgedThrough: ft });
         return;
+      }
       case 'forge:done':
         delete this._vena.forge[p.bookId];
         this._refreshBooks();
@@ -3365,6 +3370,15 @@ class Component extends DCLogic {
     const compFreshR = !!ab && ab.status === 'fresh';
     const compForgingR = !!ab && (ab.status === 'forging' || ab.status === 'raw');
     const compEmptyR = !ab;
+    // streaming forge: while a book forges chapter-by-chapter, the companion is
+    // usable for chapters already committed (<= forgedThrough) or once any facts
+    // exist — driven by the real forgedThrough from forge:progress.
+    const activeForge = ab ? D.forge[ab.id] : null;
+    const forgedThrough = activeForge && activeForge.forgedThrough != null
+      ? (activeForge.forgedThrough | 0)
+      : (typeof st.forgedThrough === 'number' ? st.forgedThrough : 0);
+    const partialReadyR = compForgingR && !compReadyR
+      && (forgedThrough >= ch || !!(meta && (meta.fact_count | 0) > 0));
     const unlocked = !!(ab && st.wikiUnlocked[ab.id]);
     const wikiData = ab ? this.wiki[ab.id] : null;
     const curSec = wikiData ? (wikiData.sections.find(x => x.id === st.wikiSection) || wikiData.sections[0]) : null;
@@ -3595,13 +3609,19 @@ class Component extends DCLogic {
       });
     };
 
-    /* relay config — real set_api_config / test_relay / list_relay_models */
-    const provs = [
-      { k: 'openrouter', label: 'OPENROUTER', url: 'https://openrouter.ai/api/v1' },
-      { k: 'openai', label: 'OPENAI', url: 'https://api.openai.com/v1' },
-      { k: 'together', label: 'TOGETHER', url: 'https://api.together.xyz/v1' },
-      { k: 'custom', label: 'CUSTOM / LOCAL', url: '' }
-    ];
+    /* relay config — one-tap presets (relay_presets/configure_relay) with the
+       manual base/key/model fields kept as the "custom" advanced fallback */
+    const presets = D.relayPresets || [];
+    const provs = (presets.length
+      ? presets.map(p => ({
+        k: p.id, label: UP(p.name), url: p.base_url, model: p.default_model,
+        localhost: /localhost|127\.0\.0\.1/.test(p.base_url || '')
+      }))
+      : [
+        { k: 'openrouter', label: 'OPENROUTER', url: 'https://openrouter.ai/api/v1' },
+        { k: 'openai', label: 'OPENAI', url: 'https://api.openai.com/v1' },
+        { k: 'together', label: 'TOGETHER', url: 'https://api.together.xyz/v1' }
+      ]).concat([{ k: 'custom', label: 'CUSTOM', url: '' }]);
     const saveRelayCfg = () => V.call('set_api_config', {
       baseUrl: String(st.relayUrl || '').trim(),
       apiKey: String(st.relayKey || ''),
@@ -3634,6 +3654,31 @@ class Component extends DCLogic {
       }).catch(e => {
         this.setState({ relayTestSt: 'idle' });
         this._honest('RELAY TEST FAILED', e);
+      });
+    };
+    // one-tap connect: for a chosen preset, configure_relay fills base+model,
+    // persists AND tests in a single call; "custom" falls back to the manual flow
+    const relayConnect = () => {
+      const pr = provs.find(p => p.k === st.relayProv);
+      if (!pr || pr.k === 'custom' || !presets.length) { relayTest(); return; }
+      if (st.relayTestSt === 'busy') return;
+      this.setState({ relayTestSt: 'busy' });
+      V.call('configure_relay', {
+        provider: pr.k,
+        apiKey: String(st.relayKey || ''),
+        model: String(st.relayModel || '').trim()
+      }).then(r => {
+        if (r && r.ok) {
+          this.setState({ relayTestSt: 'done', relayLatency: r.latency_ms, relay: true });
+          this._loadSettings();
+          this._toast(r.gate_verified ? 'RELAY CONNECTED — LEDGER GATE VERIFIED ✓' : 'RELAY CONNECTED ✓');
+        } else {
+          this.setState({ relayTestSt: 'idle' });
+          this._toast(UP('RELAY — ' + ((r && r.message) || 'NO ANSWER')).slice(0, 88));
+        }
+      }).catch(e => {
+        this.setState({ relayTestSt: 'idle' });
+        this._honest('RELAY', e);
       });
     };
 
@@ -3739,9 +3784,12 @@ class Component extends DCLogic {
           if (n.label === 'STORE' && !this._storeLoaded) { this._storeLoaded = true; this._loadStore(); }
         }
       })),
-      telemetry: meta
+      telemetry: (meta
         ? 'LEDGER ' + meta.fact_count + ' FACTS · GATE ≤ CH.' + ch + ' · 100% LOCAL'
-        : 'NO BOOK OPEN · 100% LOCAL',
+        : 'NO BOOK OPEN · 100% LOCAL')
+        + (partialReadyR
+          ? ' · COMPANION READY THROUGH ' + (forgedThrough > 0 ? 'CH.' + this.roman(forgedThrough) : 'THE OPENING') + ' — STILL FORGING THE REST'
+          : ''),
       modelBadge: aiBadge,
       themeBtns: [
         { k: 'light', label: '☀ DAY' }, { k: 'sepia', label: '▤ SEPIA' },
@@ -3776,7 +3824,7 @@ class Component extends DCLogic {
       ticks: L.mkTicks(ch, false),
       goReader: () => this.setState({ screen: 'reader', chatOpen: false }),
       goCompanion: () => this.setState({ screen: 'companion', chatOpen: false, whoId: null }),
-      compReady: compReadyR, compFresh: compFreshR, compForging: compForgingR, compEmpty: compEmptyR,
+      compReady: compReadyR || partialReadyR, compFresh: compFreshR, compForging: compForgingR && !partialReadyR, compEmpty: compEmptyR,
       coachOn: st.coach && compReadyR,
       compBooks: defs.map(b => ({
         title: b.title, cover: b.cover, initial: b.title.replace('THE ', '')[0],
@@ -3932,7 +3980,12 @@ class Component extends DCLogic {
         pressed: String(st.relayProv === p.k),
         bg: st.relayProv === p.k ? 'var(--ink)' : 'transparent',
         col: st.relayProv === p.k ? 'var(--inv)' : 'var(--ink)',
-        pick: () => this.setState({ relayProv: p.k, relayUrl: p.url || st.relayUrl })
+        pick: () => this.setState({
+          relayProv: p.k,
+          relayUrl: p.url || st.relayUrl,
+          relayModel: p.model || st.relayModel,
+          relayModels: [], relayFetchSt: 'idle', relayTestSt: 'idle'
+        })
       })),
       relayUrl: st.relayUrl,
       relayUrlInput: e => this.setState({ relayUrl: e.target.value }),
@@ -3966,8 +4019,8 @@ class Component extends DCLogic {
       relayImgEpBg: st.relayImgEp ? 'var(--ink)' : 'transparent',
       relayImgEpCol: st.relayImgEp ? 'var(--inv)' : 'var(--mut2)',
       relayImgEpState: st.relayImgEp ? 'ON' : 'OFF',
-      relayTest,
-      relayTestLabel: st.relayTestSt === 'busy' ? 'TESTING…' : 'TEST THE RELAY',
+      relayTest: relayConnect,
+      relayTestLabel: st.relayTestSt === 'busy' ? 'CONNECTING…' : 'CONNECT',
       relayTestRunning: st.relayTestSt === 'busy',
       relayTestDone: st.relayTestSt === 'done',
       relayTestResult: st.relayTestSt === 'done' ? st.relayLatency + ' MS ROUND-TRIP ✓' : '',
