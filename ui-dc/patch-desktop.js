@@ -1255,7 +1255,7 @@
       /* library */
       books,
       shelfMeta: books.length + ' BOOK' + (books.length === 1 ? '' : 'S') + ' · '
-        + books.filter(b => b.isForged).length + ' LEDGERS FORGED · EVERYTHING ON THIS DEVICE',
+        + books.filter(b => b.isForged).length + ' LEDGERS FORGED · YOUR BOOKS, YOUR DEVICE, NOTHING LEAVES IT',
       visionStart: () => this._visionRun(),
 
       /* companion header + states */
@@ -1280,7 +1280,7 @@
       /* cast */
       cast,
       silhouettes: unmet.slice(0, 3).map(s => ({ hint: s.hint || 'Keep reading' })),
-      castMeta: met.length + ' MET · ' + unmet.length + ' STILL INK — NO NAMES BEFORE YOU MEET THEM',
+      castMeta: met.length + ' MET · ' + unmet.length + ' STILL INK — CHARACTERS FROM YOUR BOOK, NO NAMES AHEAD OF YOUR BOOKMARK',
 
       /* recap (real get_recap, typed out) */
       recapIdle: !st.recapOpen,
@@ -1409,7 +1409,7 @@
         V.call('set_chat_mode', { mode: on ? 'cloud' : 'local' }).then(() => {
           this.setState({ relay: on });
           this._loadSettings();
-          this._toast(on ? 'CLOUD RELAY ON — THE GATE STILL RUNS LOCALLY FIRST' : 'CLOUD RELAY OFF');
+          this._toast(on ? 'CLOUD RELAY ON — THE LEDGER GATE RUNS LOCALLY BEFORE ANYTHING IS SENT' : 'CLOUD RELAY OFF — FULLY LOCAL AGAIN');
         }).catch(e => this._honest('RELAY', e));
       },
       relayCfgOpen: st.relayCfgOpen,
@@ -1546,7 +1546,7 @@
       readerEmpty: !compReadyR,
       readerEmptyHead: compEmptyR ? 'THE SHELF IS EMPTY' : compForgingR ? 'THE LEDGER IS STILL FORGING' : 'A FRESH LEDGER',
       readerEmptyBody: compEmptyR
-        ? 'Import an EPUB or fetch one from the store — the reader opens the moment a book is on the shelf.'
+        ? 'Bring your own book — import an EPUB and it opens the moment it is on your shelf. Every page stays on this device.'
         : compForgingR
           ? 'The reader opens when every fact is stamped with the chapter it becomes true.'
           : 'You haven’t opened this book yet. Begin at Chapter I — the companion learns as you read.',

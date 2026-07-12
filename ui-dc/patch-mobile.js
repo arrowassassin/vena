@@ -998,7 +998,7 @@
       var on = !self.state.relay;
       V.call("set_chat_mode", { mode: on ? "cloud" : "local" }).then(function () {
         self.setState({ relay: on });
-        self._toast(on ? "RELAY ON — GATED TEXT ONLY LEAVES THE PHONE" : "RELAY OFF — FULLY LOCAL AGAIN");
+        self._toast(on ? "RELAY ON — THE GATE RUNS LOCALLY BEFORE ANYTHING LEAVES THE PHONE" : "RELAY OFF — FULLY LOCAL AGAIN");
         self._refreshAi();
       }).catch(function (e) { self._up(e); });
     };
@@ -1119,6 +1119,19 @@
       var next = order[(order.indexOf(v.themeName) + 1) % order.length];
       setKV("theme", next);
     };
+
+    // --- positioning: lead with ownership + privacy (bound placeholders,
+    // safely overridden here as TEXT only — layout untouched). Spoiler-safety
+    // stays as a supporting proof-point ("no names ahead of your bookmark").
+    if (typeof v.shelfMeta === "string") {
+      v.shelfMeta = v.shelfMeta.replace("EVERYTHING ON THIS PHONE", "YOUR BOOKS, YOUR PHONE, NOTHING LEAVES IT");
+    }
+    if (typeof v.castMeta === "string") {
+      v.castMeta = v.castMeta.replace(" AHEAD", " STILL INK") + " — YOUR BOOK, NO NAMES AHEAD OF YOUR BOOKMARK";
+    }
+    if (!ab) {
+      v.readerEmptyBody = "Bring your own book — import an EPUB and it opens on your shelf. Every page stays on this phone.";
+    }
 
     return v;
   };
