@@ -16,9 +16,15 @@ name = "vena"
 path = "src/bin/vena.rs"
 required-features = ["tauri"]
 
+# Dev bridge: the SAME AppApi surface over localhost HTTP+SSE, so the React UI in a
+# plain browser drives the REAL engine (no mocks). Not shipped; dev/CI only.
+[[bin]]
+name = "vena-devserver"
+path = "src/bin/devserver.rs"
+
 [features]
 default = []
-tauri = ["dep:tauri", "dep:tauri-plugin-dialog", "dep:tauri-plugin-notification", "dep:keyring"]
+tauri = ["dep:tauri", "dep:tauri-plugin-dialog", "dep:tauri-plugin-notification", "dep:keyring", "dep:tauri-build"]
 
 [dependencies]
 vena-core = { path = "../vena-core" }
@@ -27,7 +33,9 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 anyhow = { workspace = true }
 reqwest = { workspace = true }
+regex = { workspace = true }
 tracing = { workspace = true }
+tiny_http = "0.12"
 
 # Tauri-only (optional; enabled by the `tauri` feature).
 tauri = { version = "2", features = [], optional = true }

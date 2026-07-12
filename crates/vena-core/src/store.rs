@@ -165,6 +165,9 @@ impl Store {
         tx.execute("DELETE FROM message WHERE conversation_id IN (SELECT id FROM conversation WHERE story_id=?1)", params![id])?;
         tx.execute("DELETE FROM chat_memory WHERE conversation_id IN (SELECT id FROM conversation WHERE story_id=?1)", params![id])?;
         tx.execute("DELETE FROM conversation WHERE story_id=?1", params![id])?;
+        // Story graph (v2.0): edges cite facts, so they burn before facts do.
+        tx.execute("DELETE FROM edge WHERE story_id=?1", params![id])?;
+        tx.execute("DELETE FROM entity WHERE story_id=?1", params![id])?;
         tx.execute(
             "DELETE FROM scene WHERE episode_id IN (SELECT id FROM episode WHERE story_id=?1)",
             params![id],
@@ -491,6 +494,34 @@ impl Store {
     }
 
     // ---------- conversations / messages ----------
+
+    /// The most recent non-archived conversation for a (book, character), if any.
+    pub fn find_active_conversation(
+        &self,
+        story_id: i64,
+        character_id: Option<i64>,
+    ) -> Result<Option<i64>> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT id FROM conversation WHERE story_id=?1 AND archived=0
+                 AND ((character_id IS NULL AND ?2 IS NULL) OR character_id=?2)
+                 ORDER BY id DESC LIMIT 1",
+                params![story_id, character_id],
+                |r| r.get(0),
+            )
+            .optional()?)
+    }
+
+    pub fn slug_exists(&self, slug: &str) -> Result<bool> {
+        Ok(self
+            .conn
+            .query_row("SELECT 1 FROM story WHERE slug=?1", params![slug], |r| {
+                r.get::<_, i64>(0)
+            })
+            .optional()?
+            .is_some())
+    }
 
     pub fn create_conversation(&self, story_id: i64, character_id: Option<i64>) -> Result<i64> {
         self.conn.execute(

@@ -52,23 +52,15 @@ impl Engine {
         message: &str,
         on_stage: &mut dyn FnMut(&str),
     ) -> Result<TurnReport> {
-        let progress = store.get_progress(story_id)?.0;
-
-        // ---- STAGE 1: GATE (deterministic SQL) ----
+        // ---- STAGES 1 + 1.5 + 2 (shared with gate_and_assemble) ----
         on_stage("gate");
-        let keyword = store.gated_facts(story_id, progress, character_id, message, 24)?;
-        // ---- STAGE 1.5: graph-guided retrieval (§6b) ----
-        // Resolve entities in the message, walk their gated ego-network, merge the
-        // linked facts with the keyword hits. Graph edges are chapter-stamped so this
-        // stays spoiler-safe by construction.
-        let graph = store.graph_facts(story_id, progress, character_id, message, 2)?;
-        let visible = crate::graph::merge_retrieval(keyword, graph, message, 24);
-        let forbidden = store.forbidden_facts(story_id, progress, character_id)?;
-        let unmet = store.unmet_character_names(story_id)?;
-        let character = match character_id {
-            Some(cid) => Some(store.get_character(story_id, cid)?),
-            None => None,
-        };
+        let GatedTurn {
+            system,
+            visible,
+            forbidden,
+            unmet,
+            character,
+        } = gate_and_assemble(store, story_id, character_id, message)?;
 
         // ---- Guard Character Fates: short-circuit before generation ----
         if self.guard_fates && is_fate_question(message) {
@@ -81,9 +73,6 @@ impl Engine {
                 leaks_caught: vec![],
             });
         }
-
-        // ---- STAGE 2: ASSEMBLE ----
-        let system = assemble_prompt(&character, progress, &visible);
 
         // ---- STAGE 3: GENERATE ----
         on_stage("compose");
@@ -316,6 +305,46 @@ impl Engine {
     }
 }
 
+/// The output of stages 1 + 1.5 + 2 — everything deterministic that happens before
+/// any model is invoked. Public so the eval harness can export the EXACT prompts
+/// the production pipeline would send (out-of-process / human-in-the-loop eval).
+pub struct GatedTurn {
+    pub system: String,
+    pub visible: Vec<Fact>,
+    pub forbidden: Vec<Fact>,
+    pub unmet: Vec<String>,
+    pub character: Option<Character>,
+}
+
+/// STAGE 1 (gate) + 1.5 (graph retrieval) + 2 (assemble). Deterministic; no model.
+pub fn gate_and_assemble(
+    store: &Store,
+    story_id: i64,
+    character_id: Option<i64>,
+    message: &str,
+) -> Result<GatedTurn> {
+    let progress = store.get_progress(story_id)?.0;
+    let keyword = store.gated_facts(story_id, progress, character_id, message, 24)?;
+    // Graph edges are chapter-stamped, so stage-1.5 retrieval is spoiler-safe by
+    // construction (§6b).
+    let graph = store.graph_facts(story_id, progress, character_id, message, 2)?;
+    let visible = crate::graph::merge_retrieval(keyword, graph, message, 24);
+    let forbidden = store.forbidden_facts(story_id, progress, character_id)?;
+    let unmet = store.unmet_character_names(story_id)?;
+    let character = match character_id {
+        Some(cid) => Some(store.get_character(story_id, cid)?),
+        None => None,
+    };
+    let system = assemble_prompt(&character, progress, &visible);
+    Ok(GatedTurn {
+        system,
+        visible,
+        forbidden,
+        unmet,
+        character,
+    })
+}
+
 // ---------- theory resolution (progress-gated, never early) ----------
 
 /// On progress advance, flip OPEN theories that newly-visible weight≥2 facts settle
@@ -399,7 +428,9 @@ fn deflection(character: &Option<Character>) -> String {
 /// Cheap intent check for "Guard Character Fates" (§11.4a) — a regex on fate-shaped
 /// questions ("does X die?", "who's the killer?", "how does it end?"), run before
 /// generation so we deflect without spending inference or risking a leak.
-fn is_fate_question(message: &str) -> bool {
+/// Public: the eval's prompt-export uses it to mark interviews the engine would
+/// deflect without ever calling a model.
+pub fn is_fate_question(message: &str) -> bool {
     use std::sync::OnceLock;
     static RE: OnceLock<regex::Regex> = OnceLock::new();
     let re = RE.get_or_init(|| {

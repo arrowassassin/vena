@@ -132,6 +132,96 @@ impl OpenAiClient {
     }
 }
 
+/// Native Anthropic Messages API client (`/v1/messages`). Anthropic keys are a
+/// first-class Cloud Relay option alongside OpenAI-compatible endpoints — same
+/// invariant: it only ever receives the already-gated prompt.
+pub struct AnthropicClient {
+    base_url: String,
+    api_key: String,
+    model: String,
+    http: reqwest::blocking::Client,
+}
+
+impl AnthropicClient {
+    pub fn new(base_url: &str, api_key: &str, model: &str) -> Self {
+        AnthropicClient {
+            base_url: base_url.trim_end_matches('/').to_string(),
+            api_key: api_key.to_string(),
+            model: model.to_string(),
+            http: reqwest::blocking::Client::builder()
+                .timeout(std::time::Duration::from_secs(120))
+                .build()
+                .expect("http client"),
+        }
+    }
+}
+
+impl Inference for AnthropicClient {
+    fn name(&self) -> String {
+        format!("cloud-relay(anthropic):{}", self.model)
+    }
+    fn is_remote(&self) -> bool {
+        true
+    }
+    fn complete(&self, system: &str, user: &str, opts: &GenOptions) -> Result<String> {
+        let mut sys = system.to_string();
+        if opts.json {
+            sys.push_str("\n\nRespond with STRICT JSON only — no prose, no code fences.");
+        }
+        let body = serde_json::json!({
+            "model": self.model,
+            "max_tokens": opts.max_tokens,
+            "temperature": opts.temperature,
+            "system": sys,
+            "messages": [{"role": "user", "content": user}],
+        });
+        let resp = self
+            .http
+            .post(format!("{}/v1/messages", self.base_url))
+            .header("x-api-key", &self.api_key)
+            .header("anthropic-version", "2023-06-01")
+            .json(&body)
+            .send()
+            .map_err(|e| VenaError::Inference(e.to_string()))?;
+        if !resp.status().is_success() {
+            return Err(VenaError::Inference(format!(
+                "anthropic backend returned {}",
+                resp.status()
+            )));
+        }
+        let v: serde_json::Value = resp
+            .json()
+            .map_err(|e| VenaError::Inference(e.to_string()))?;
+        let text = v["content"][0]["text"]
+            .as_str()
+            .ok_or_else(|| VenaError::Inference("no content in anthropic response".into()))?
+            .to_string();
+        Ok(text)
+    }
+}
+
+/// Resolve the dev/eval backend from env. Priority: ANTHROPIC_API_KEY (native
+/// Anthropic endpoint) → VENA_BASE_URL (OpenAI-compat, incl. localhost servers).
+pub fn backend_from_env() -> Option<(String, Box<dyn Inference>)> {
+    if let Ok(key) = std::env::var("ANTHROPIC_API_KEY") {
+        let base = std::env::var("ANTHROPIC_BASE_URL")
+            .unwrap_or_else(|_| "https://api.anthropic.com".into());
+        let model =
+            std::env::var("VENA_MODEL").unwrap_or_else(|_| "claude-haiku-4-5-20251001".into());
+        return Some((
+            format!("{base} ({model})"),
+            Box::new(AnthropicClient::new(&base, &key, &model)),
+        ));
+    }
+    let base = std::env::var("VENA_BASE_URL").ok()?;
+    let key = std::env::var("VENA_API_KEY").unwrap_or_default();
+    let model = std::env::var("VENA_MODEL").unwrap_or_else(|_| "gpt-4o-mini".into());
+    Some((
+        format!("{base} ({model})"),
+        Box::new(OpenAiClient::new(&base, &key, &model)),
+    ))
+}
+
 impl Inference for OpenAiClient {
     fn name(&self) -> String {
         if self.remote {

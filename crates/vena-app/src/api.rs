@@ -41,8 +41,8 @@ const KC_IMAGE_KEY: &str = "vena:image_api_key";
 
 #[derive(Debug, Clone, Serialize)]
 pub struct AiStatus {
-    pub mode: String,   // local | cloud | none
-    pub model: String,  // brand name (INK·3B / QUILL·7B / … or the relay model)
+    pub mode: String,  // local | cloud | none
+    pub model: String, // brand name (INK·3B / QUILL·7B / … or the relay model)
     pub ready: bool,
     /// The eval steer: local labelled experimental until validated (see EVAL.md).
     pub local_experimental: bool,
@@ -63,7 +63,7 @@ pub struct RelayTest {
     pub message: String,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StoreItem {
     pub source: String, // vena-catalog | gutenberg | standard-ebooks | opds | ao3
     pub id: String,
@@ -149,9 +149,13 @@ impl AppApi {
                 .map_err(|e| VenaError::Other(e.to_string()))?
         } else if let Ok(backend) = self.backend_for_forge() {
             on_progress(40, "extract");
-            vena_forge::ledger::extract_with_model(backend.as_ref(), &book.chapters, |seq, total| {
-                on_progress(40 + (seq as u32 * 50 / total.max(1) as u32), "extract");
-            })
+            vena_forge::ledger::extract_with_model(
+                backend.as_ref(),
+                &book.chapters,
+                |seq, total| {
+                    on_progress(40 + (seq as u32 * 50 / total.max(1) as u32), "extract");
+                },
+            )
             .map_err(|e| VenaError::Inference(e.to_string()))?
         } else {
             // Local tier with no model yet: import canon only, ledger pending.
@@ -260,7 +264,9 @@ impl AppApi {
                 || c.aliases.iter().any(|a| a.eq_ignore_ascii_case(name));
             if hit {
                 if !c.met {
-                    return Err(VenaError::NotFound(format!("{name} — keep reading to meet them")));
+                    return Err(VenaError::NotFound(format!(
+                        "{name} — keep reading to meet them"
+                    )));
                 }
                 return Ok(c);
             }
@@ -363,7 +369,11 @@ impl AppApi {
         let res = backend.complete(
             "You are a connectivity probe. Reply with the single word: PONG.",
             "ping",
-            &vena_core::inference::GenOptions { max_tokens: 8, temperature: 0.0, json: false },
+            &vena_core::inference::GenOptions {
+                max_tokens: 8,
+                temperature: 0.0,
+                json: false,
+            },
         );
         let latency_ms = t0.elapsed().as_millis();
         match res {
@@ -400,7 +410,9 @@ impl AppApi {
             .bearer_auth(&key)
             .send()
             .map_err(|e| VenaError::Inference(e.to_string()))?;
-        let v: serde_json::Value = resp.json().map_err(|e| VenaError::Inference(e.to_string()))?;
+        let v: serde_json::Value = resp
+            .json()
+            .map_err(|e| VenaError::Inference(e.to_string()))?;
         Ok(v["data"]
             .as_array()
             .map(|a| {
@@ -449,7 +461,9 @@ impl AppApi {
     pub fn set_setting(&self, key: &str, value: &str) -> Result<()> {
         // Never allow a secret to be routed into the settings table.
         if key.contains("api_key") || key.contains("secret") {
-            return Err(VenaError::Other("secrets go to the keychain, not settings".into()));
+            return Err(VenaError::Other(
+                "secrets go to the keychain, not settings".into(),
+            ));
         }
         self.store().set_setting(key, value)
     }
@@ -458,13 +472,210 @@ impl AppApi {
 
     pub fn get_image_status(&self) -> Result<ImageStatus> {
         let store = self.store();
-        if self.setting_opt(&store, K_IMAGE_MODEL).is_some() || self.keystore.get(KC_IMAGE_KEY)?.is_some() {
-            Ok(ImageStatus { tier: "api".into(), model: self.setting_or(&store, K_IMAGE_MODEL, "relay") })
+        if self.setting_opt(&store, K_IMAGE_MODEL).is_some()
+            || self.keystore.get(KC_IMAGE_KEY)?.is_some()
+        {
+            Ok(ImageStatus {
+                tier: "api".into(),
+                model: self.setting_or(&store, K_IMAGE_MODEL, "relay"),
+            })
         } else if self.data_dir.join("models/paint").exists() {
-            Ok(ImageStatus { tier: "desktop".into(), model: "EASEL·XL".into() })
+            Ok(ImageStatus {
+                tier: "desktop".into(),
+                model: "EASEL·XL".into(),
+            })
         } else {
-            Ok(ImageStatus { tier: "none".into(), model: "".into() })
+            Ok(ImageStatus {
+                tier: "none".into(),
+                model: "".into(),
+            })
         }
+    }
+
+    // ============================ Store (§F4) ============================
+
+    /// Merged search across all sources, origin-tagged. Local vena-catalog (bundled
+    /// prebuilt packages) + Project Gutenberg (Gutendex). OPDS/AO3 add in browse.
+    pub fn store_search(&self, query: &str) -> Result<Vec<StoreItem>> {
+        let shelf: std::collections::HashSet<String> = self
+            .store()
+            .list_books()?
+            .into_iter()
+            .map(|b| b.title.to_lowercase())
+            .collect();
+        let mut items = Vec::new();
+
+        // vena-catalog: the bundled flagship packages.
+        for p in bundled_packages() {
+            if p.exists() {
+                let title = "Dracula";
+                if query.is_empty() || title.to_lowercase().contains(&query.to_lowercase()) {
+                    items.push(StoreItem {
+                        source: "vena-catalog".into(),
+                        id: "dracula".into(),
+                        title: title.into(),
+                        author: Some("Bram Stoker".into()),
+                        license: Some("public-domain".into()),
+                        download_url: Some(p.to_string_lossy().into()),
+                        cover: None,
+                        on_shelf: shelf.contains("dracula"),
+                    });
+                }
+                break;
+            }
+        }
+
+        // Project Gutenberg (real Gutendex; may be offline-blocked — that's honest).
+        if !query.is_empty() {
+            if let Ok(results) = crate::net::gutendex_search(query) {
+                for (id, title, author, epub, cover) in results.into_iter().take(20) {
+                    items.push(StoreItem {
+                        source: "gutenberg".into(),
+                        on_shelf: shelf.contains(&title.to_lowercase()),
+                        id,
+                        title,
+                        author,
+                        license: Some("public-domain".into()),
+                        download_url: epub,
+                        cover,
+                    });
+                }
+            }
+        }
+        Ok(items)
+    }
+
+    pub fn store_browse(&self, source: &str, cursor: Option<&str>) -> Result<Vec<StoreItem>> {
+        match source {
+            "gutenberg" => {
+                let results = crate::net::gutendex_search(cursor.unwrap_or("popular"))?;
+                Ok(results
+                    .into_iter()
+                    .map(|(id, title, author, epub, cover)| StoreItem {
+                        source: "gutenberg".into(),
+                        id,
+                        title,
+                        author,
+                        license: Some("public-domain".into()),
+                        download_url: epub,
+                        cover,
+                        on_shelf: false,
+                    })
+                    .collect())
+            }
+            _ => {
+                // OPDS catalog by id (Standard Ebooks or user-added).
+                let url = self
+                    .opds_url_for(source)
+                    .unwrap_or_else(|| source.to_string());
+                let entries = crate::net::opds_fetch(&url)?;
+                Ok(entries
+                    .into_iter()
+                    .map(|(id, title, author, acquire)| StoreItem {
+                        source: "opds".into(),
+                        id,
+                        title,
+                        author,
+                        license: None,
+                        download_url: acquire,
+                        cover: None,
+                        on_shelf: false,
+                    })
+                    .collect())
+            }
+        }
+    }
+
+    /// Download a store item and forge it. `on_progress(pct, phase)` where phase is
+    /// "download" then "forge". Returns the new BookMeta.
+    pub fn store_download(
+        &self,
+        item: &StoreItem,
+        mut on_progress: impl FnMut(u32, &str),
+    ) -> Result<BookMeta> {
+        let url = item
+            .download_url
+            .as_deref()
+            .ok_or_else(|| VenaError::Other("no download url".into()))?;
+        // A local vena-catalog package: import directly.
+        if item.source == "vena-catalog" && Path::new(url).exists() {
+            on_progress(50, "download");
+            let sid = vena_core::pkg::import_vena(&self.store(), Path::new(url))?;
+            on_progress(100, "forge");
+            return self.store().get_book(sid);
+        }
+        // Otherwise download the EPUB then import+forge.
+        let tmp = self
+            .data_dir
+            .join(format!("dl-{}.epub", slugify(&item.title)));
+        crate::net::download_file(url, &tmp, &mut |p| on_progress(p * 60 / 100, "download"))?;
+        let meta = self.import_book(&tmp.to_string_lossy(), |p, _| {
+            on_progress(60 + p * 40 / 100, "forge")
+        })?;
+        let _ = std::fs::remove_file(&tmp);
+        Ok(meta)
+    }
+
+    pub fn add_opds_catalog(&self, url: &str, name: &str) -> Result<String> {
+        let store = self.store();
+        let mut list = self.opds_catalogs(&store);
+        let id = format!("opds-{}", list.len() + 1);
+        list.push(serde_json::json!({ "id": id, "name": name, "url": url }));
+        store.set_setting("opds_catalogs", &serde_json::Value::Array(list).to_string())?;
+        Ok(id)
+    }
+
+    pub fn remove_opds_catalog(&self, id: &str) -> Result<()> {
+        let store = self.store();
+        let list: Vec<serde_json::Value> = self
+            .opds_catalogs(&store)
+            .into_iter()
+            .filter(|c| c["id"].as_str() != Some(id))
+            .collect();
+        store.set_setting("opds_catalogs", &serde_json::Value::Array(list).to_string())
+    }
+
+    pub fn list_opds_catalogs(&self) -> Result<serde_json::Value> {
+        Ok(serde_json::Value::Array(self.opds_catalogs(&self.store())))
+    }
+
+    /// import_ao3_link — fetch the EPUB AO3 officially serves, then import+forge.
+    pub fn import_ao3_link(
+        &self,
+        url: &str,
+        mut on_progress: impl FnMut(u32, &str),
+    ) -> Result<BookMeta> {
+        let epub = crate::net::ao3_epub_url(url)?;
+        let tmp = self.data_dir.join("dl-ao3.epub");
+        crate::net::download_file(&epub, &tmp, &mut |p| on_progress(p * 60 / 100, "download"))?;
+        let meta = self.import_book(&tmp.to_string_lossy(), |p, _| {
+            on_progress(60 + p * 40 / 100, "forge")
+        })?;
+        let _ = std::fs::remove_file(&tmp);
+        Ok(meta)
+    }
+
+    fn opds_catalogs(&self, store: &Store) -> Vec<serde_json::Value> {
+        store
+            .get_setting("opds_catalogs")
+            .ok()
+            .flatten()
+            .and_then(|s| serde_json::from_str::<Vec<serde_json::Value>>(&s).ok())
+            .unwrap_or_else(|| {
+                // Standard Ebooks OPDS ships as a known-good default source.
+                vec![serde_json::json!({
+                    "id": "standard-ebooks",
+                    "name": "Standard Ebooks",
+                    "url": "https://standardebooks.org/feeds/opds/all"
+                })]
+            })
+    }
+
+    fn opds_url_for(&self, id: &str) -> Option<String> {
+        self.opds_catalogs(&self.store())
+            .into_iter()
+            .find(|c| c["id"].as_str() == Some(id))
+            .and_then(|c| c["url"].as_str().map(str::to_string))
     }
 
     // ============================ helpers ============================
@@ -476,17 +687,7 @@ impl AppApi {
         character_id: Option<i64>,
     ) -> Result<i64> {
         // One active (non-archived) conversation per (book, character).
-        let existing: Option<i64> = store
-            .conn()
-            .query_row(
-                "SELECT id FROM conversation WHERE story_id=?1 AND archived=0
-                 AND ((character_id IS NULL AND ?2 IS NULL) OR character_id=?2)
-                 ORDER BY id DESC LIMIT 1",
-                rusqlite_params(book_id, character_id),
-                |r| r.get(0),
-            )
-            .ok();
-        match existing {
+        match store.find_active_conversation(book_id, character_id)? {
             Some(id) => Ok(id),
             None => store.create_conversation(book_id, character_id),
         }
@@ -522,21 +723,35 @@ impl AppApi {
                 let model = self.setting_or(store, K_LOCAL_MODEL, "qwen3");
                 Ok(Box::new(OpenAiClient::new(&base, "", &model)))
             }
-            _ => self.cloud_backend(),
+            _ => self.cloud_backend_with(store),
         }
     }
 
-    fn cloud_backend(&self) -> Result<Box<dyn vena_core::inference::Inference>> {
+    /// Cloud Relay backend. Takes the ALREADY-HELD store guard — never re-locks
+    /// (the profile Mutex is not reentrant; re-locking here would deadlock).
+    fn cloud_backend_with(
+        &self,
+        store: &Store,
+    ) -> Result<Box<dyn vena_core::inference::Inference>> {
         if let Ok(base) = std::env::var("VENA_BASE_URL") {
             let key = std::env::var("VENA_API_KEY").unwrap_or_default();
             let model = std::env::var("VENA_MODEL").unwrap_or_else(|_| "gpt-4o-mini".into());
             return Ok(Box::new(OpenAiClient::new(&base, &key, &model)));
         }
-        let store = self.store();
-        let base = self.setting_opt(&store, K_CLOUD_BASE).ok_or(VenaError::NoBackend)?;
-        let model = self.setting_or(&store, K_CLOUD_MODEL, "gpt-4o-mini");
-        let key = self.keystore.get(KC_CLOUD_KEY)?.ok_or(VenaError::NoBackend)?;
+        let base = self
+            .setting_opt(store, K_CLOUD_BASE)
+            .ok_or(VenaError::NoBackend)?;
+        let model = self.setting_or(store, K_CLOUD_MODEL, "gpt-4o-mini");
+        let key = self
+            .keystore
+            .get(KC_CLOUD_KEY)?
+            .ok_or(VenaError::NoBackend)?;
         Ok(Box::new(OpenAiClient::new(&base, &key, &model)))
+    }
+
+    fn cloud_backend(&self) -> Result<Box<dyn vena_core::inference::Inference>> {
+        let store = self.store();
+        self.cloud_backend_with(&store)
     }
 
     /// A forge backend (full-tier): whatever chat backend is ready, else error.
@@ -546,10 +761,15 @@ impl AppApi {
     }
 
     fn setting_opt(&self, store: &Store, key: &str) -> Option<String> {
-        store.get_setting(key).ok().flatten().filter(|s| !s.is_empty())
+        store
+            .get_setting(key)
+            .ok()
+            .flatten()
+            .filter(|s| !s.is_empty())
     }
     fn setting_or(&self, store: &Store, key: &str, default: &str) -> String {
-        self.setting_opt(store, key).unwrap_or_else(|| default.to_string())
+        self.setting_opt(store, key)
+            .unwrap_or_else(|| default.to_string())
     }
     fn setting_bool_locked(&self, store: &Store, key: &str, default: bool) -> bool {
         match store.get_setting(key).ok().flatten() {
@@ -561,13 +781,6 @@ impl AppApi {
     pub fn data_dir(&self) -> &Path {
         &self.data_dir
     }
-}
-
-fn rusqlite_params(
-    book_id: i64,
-    character_id: Option<i64>,
-) -> impl rusqlite::Params {
-    rusqlite::params![book_id, character_id]
 }
 
 fn bundled_packages() -> Vec<PathBuf> {
@@ -601,11 +814,7 @@ fn slugify(s: &str) -> String {
 fn unique_slug(store: &Store, slug: &str) -> Result<String> {
     let mut candidate = slug.to_string();
     let mut n = 1;
-    while store
-        .conn()
-        .query_row("SELECT 1 FROM story WHERE slug=?1", [&candidate], |r| r.get::<_, i64>(0))
-        .is_ok()
-    {
+    while store.slug_exists(&candidate)? {
         n += 1;
         candidate = format!("{slug}-{n}");
     }

@@ -35,6 +35,14 @@ struct Cli {
     /// Write the verdict block to this file (e.g. EVAL.md fragment).
     #[arg(long)]
     out: Option<PathBuf>,
+    /// Export the exact gated prompts (stages 1–2) to this JSONL and exit. A human
+    /// or external LLM answers them; score with --replies.
+    #[arg(long)]
+    export_prompts: Option<PathBuf>,
+    /// Score pre-generated replies (JSONL {idx, reply, repair_reply?}) through
+    /// stages 4–5 — a full generative eval with an out-of-process model.
+    #[arg(long)]
+    replies: Option<PathBuf>,
 }
 
 #[derive(serde::Deserialize)]
@@ -61,7 +69,7 @@ fn main() -> Result<()> {
         .collect::<std::result::Result<_, _>>()
         .context("parsing interviews")?;
 
-    let backend = backend_from_env();
+    let backend = vena_core::inference::backend_from_env();
     let mode = GateMode::parse(&cli.mode);
 
     println!(
@@ -72,15 +80,33 @@ fn main() -> Result<()> {
     );
     println!("{}", "=".repeat(64));
 
-    let report = match backend {
-        Some((label, b)) => {
-            println!("BACKEND   {label} (generative eval)\n");
-            run_generative(&profile, sid, &interviews, b, mode)?
-        }
-        None => {
-            println!("BACKEND   none — running DETERMINISTIC gate-containment audit");
-            println!("          (set VENA_BASE_URL/KEY/MODEL for the full generative eval)\n");
-            run_gate_audit(&profile, sid, &interviews)?
+    // Phase 1 of the out-of-process flow: dump the exact gated prompts and exit.
+    if let Some(path) = cli.export_prompts {
+        export_prompts(&profile, sid, &interviews, &path)?;
+        println!(
+            "PROMPTS   exported to {} — answer them, then re-run with --replies",
+            path.display()
+        );
+        return Ok(());
+    }
+
+    let report = if let Some(replies_path) = cli.replies {
+        println!("BACKEND   replies file (out-of-process model / human-in-the-loop)\n");
+        let backend = RepliesBackend::load(&replies_path)?;
+        run_generative(&profile, sid, &interviews, Box::new(backend), mode)?
+    } else {
+        match backend {
+            Some((label, b)) => {
+                println!("BACKEND   {label} (generative eval)\n");
+                run_generative(&profile, sid, &interviews, b, mode)?
+            }
+            None => {
+                println!("BACKEND   none — running DETERMINISTIC gate-containment audit");
+                println!(
+                    "          (set ANTHROPIC_API_KEY or VENA_BASE_URL for the generative eval)\n"
+                );
+                run_gate_audit(&profile, sid, &interviews)?
+            }
         }
     };
 
@@ -438,6 +464,111 @@ fn backend_from_env() -> Option<(String, Box<dyn Inference>)> {
         format!("{base} ({model})"),
         Box::new(OpenAiClient::new(&base, &key, &model)),
     ))
+}
+
+/// Export the EXACT gated prompts (stages 1–2 via the production `gate_and_assemble`)
+/// so an out-of-process model (or a person) can answer them. One JSON per line:
+/// {idx, character, reader_chapter, system, user}.
+fn export_prompts(
+    profile: &Store,
+    sid: i64,
+    interviews: &[Interview],
+    path: &std::path::Path,
+) -> Result<()> {
+    let mut f = std::fs::File::create(path)?;
+    for (idx, iv) in interviews.iter().enumerate() {
+        profile.set_progress(sid, iv.reader_chapter, 0)?;
+        let cid = resolve_character(profile, sid, iv.character.as_deref())?;
+        // Guard Character Fates deflects these before generation — no reply needed;
+        // marked so the replies file stays aligned with actual backend calls.
+        if vena_core::engine::is_fate_question(&iv.question) {
+            writeln!(
+                f,
+                "{}",
+                serde_json::json!({ "idx": idx, "deflected": true, "user": iv.question })
+            )?;
+            continue;
+        }
+        let gated = vena_core::engine::gate_and_assemble(profile, sid, cid, &iv.question)
+            .map_err(|e| anyhow::anyhow!("{e}"))?;
+        let line = serde_json::json!({
+            "idx": idx,
+            "character": iv.character,
+            "reader_chapter": iv.reader_chapter,
+            "system": gated.system,
+            "user": iv.question,
+        });
+        writeln!(f, "{line}")?;
+    }
+    Ok(())
+}
+
+/// Backend that replays out-of-process replies. The engine calls it once per turn
+/// (draft) and possibly once more (repair) — repair calls are recognized by the
+/// repair marker in the system prompt, so drafts stay aligned with interview order.
+struct RepliesBackend {
+    replies: std::sync::Mutex<ReplayState>,
+}
+
+struct ReplayState {
+    items: Vec<(String, Option<String>)>, // (reply, repair_reply)
+    pos: usize,
+}
+
+impl RepliesBackend {
+    fn load(path: &std::path::Path) -> Result<Self> {
+        #[derive(serde::Deserialize)]
+        struct Row {
+            idx: usize,
+            reply: String,
+            #[serde(default)]
+            repair_reply: Option<String>,
+        }
+        let mut rows: Vec<Row> = std::fs::read_to_string(path)?
+            .lines()
+            .filter(|l| !l.trim().is_empty())
+            .map(serde_json::from_str)
+            .collect::<std::result::Result<_, _>>()
+            .context("parsing replies JSONL")?;
+        rows.sort_by_key(|r| r.idx);
+        Ok(RepliesBackend {
+            replies: std::sync::Mutex::new(ReplayState {
+                items: rows
+                    .into_iter()
+                    .map(|r| (r.reply, r.repair_reply))
+                    .collect(),
+                pos: 0,
+            }),
+        })
+    }
+}
+
+impl Inference for RepliesBackend {
+    fn name(&self) -> String {
+        "replies-file (out-of-process model)".into()
+    }
+    fn is_remote(&self) -> bool {
+        // Treat as remote so the engine exercises the Cloud Relay-safe repair path.
+        true
+    }
+    fn complete(
+        &self,
+        system: &str,
+        _user: &str,
+        _opts: &vena_core::inference::GenOptions,
+    ) -> vena_core::Result<String> {
+        let mut st = self.replies.lock().unwrap();
+        let is_repair = system.contains("IMPORTANT: Your previous reply drifted");
+        if is_repair {
+            // Repair regen for the CURRENT interview (pos-1).
+            let cur = st.pos.saturating_sub(1);
+            let (reply, repair) = &st.items[cur];
+            return Ok(repair.clone().unwrap_or_else(|| reply.clone()));
+        }
+        let i = st.pos.min(st.items.len().saturating_sub(1));
+        st.pos += 1;
+        Ok(st.items[i].0.clone())
+    }
 }
 
 fn pct(n: usize, d: usize) -> f64 {
