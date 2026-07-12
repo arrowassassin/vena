@@ -4,15 +4,12 @@
   "version": "0.1.0",
   "identifier": "app.vena.reader",
   "build": {
-    "frontendDist": "../../ui/dist",
-    "devUrl": "http://localhost:5173",
-    "beforeDevCommand": "npm --prefix ../../ui run dev",
-    "beforeBuildCommand": "npm --prefix ../../ui run build"
+    "frontendDist": "../../ui-dc"
   },
   "app": {
     "windows": [
       {
-        "title": "VENA — the spoiler-safe reading companion",
+        "title": "VENA \u2014 the spoiler-safe reading companion",
         "width": 1440,
         "height": 920,
         "minWidth": 390,
@@ -26,7 +23,9 @@
   "bundle": {
     "active": true,
     "targets": "all",
-    "resources": { "../../data/packages/dracula.vena": "packages/dracula.vena" },
+    "resources": {
+      "../../data/packages/dracula.vena": "packages/dracula.vena"
+    },
     "icon": []
   }
 }

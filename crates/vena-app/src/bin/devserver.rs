@@ -150,7 +150,7 @@ fn ui_dist() -> std::path::PathBuf {
     std::env::var("VENA_UI_DIST")
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|_| {
-            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../ui/dist")
+            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../ui-dc")
         })
 }
 
