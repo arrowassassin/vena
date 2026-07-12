@@ -181,6 +181,27 @@ fn list_theories(api: State<'_, Api>, book_id: i64) -> Result<Vec<Theory>, VenaE
     api.list_theories(book_id)
 }
 
+// ============================ Portability & sharing ============================
+
+#[tauri::command]
+fn export_bundle(
+    api: State<'_, Api>,
+    book_id: Option<i64>,
+    scope: String,
+) -> Result<serde_json::Value, VenaError> {
+    api.export_bundle(book_id, &scope)
+}
+
+#[tauri::command]
+fn import_bundle(api: State<'_, Api>, json: String) -> Result<serde_json::Value, VenaError> {
+    api.import_bundle(&json)
+}
+
+#[tauri::command]
+fn forget_conversations(api: State<'_, Api>, book_id: i64) -> Result<(), VenaError> {
+    api.forget_conversations(book_id)
+}
+
 // ============================ Archive ============================
 
 #[tauri::command]
@@ -523,6 +544,9 @@ fn main() {
             get_wiki_index,
             get_wiki_page,
             set_spoiler_consent,
+            export_bundle,
+            import_bundle,
+            forget_conversations,
             store_search,
             store_browse,
             store_download,

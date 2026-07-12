@@ -519,6 +519,56 @@ impl Store {
             .unwrap_or((0, 0)))
     }
 
+    /// The progress row's last-updated timestamp (for last-writer-wins sync merge).
+    pub fn progress_updated_at(&self, story_id: i64) -> Result<Option<String>> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT updated_at FROM progress WHERE story_id=?1",
+                params![story_id],
+                |r| r.get(0),
+            )
+            .optional()?)
+    }
+
+    /// Set progress carrying an EXPLICIT timestamp (sync import) — preserves the
+    /// source device's updated_at so future last-writer-wins comparisons are correct.
+    pub fn set_progress_synced(
+        &self,
+        story_id: i64,
+        episode_seq: i64,
+        scene_seq: i64,
+        updated_at: &str,
+    ) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO progress (story_id,episode_seq,scene_seq,updated_at)
+             VALUES (?1,?2,?3,?4)
+             ON CONFLICT(story_id) DO UPDATE SET episode_seq=?2, scene_seq=?3, updated_at=?4",
+            params![story_id, episode_seq, scene_seq, updated_at],
+        )?;
+        Ok(())
+    }
+
+    /// "Forget our conversations" (§6b): wipe chat + relationship memory for a book,
+    /// keeping the book, its ledger, progress, and theories. A softer cousin of burn.
+    pub fn forget_conversations(&self, story_id: i64) -> Result<()> {
+        self.conn.execute(
+            "DELETE FROM message WHERE conversation_id IN
+               (SELECT id FROM conversation WHERE story_id=?1)",
+            params![story_id],
+        )?;
+        self.conn.execute(
+            "DELETE FROM chat_memory WHERE conversation_id IN
+               (SELECT id FROM conversation WHERE story_id=?1)",
+            params![story_id],
+        )?;
+        self.conn.execute(
+            "DELETE FROM conversation WHERE story_id=?1",
+            params![story_id],
+        )?;
+        Ok(())
+    }
+
     /// Set progress. Returns whether this was a REWIND (new < old), which triggers
     /// re-seal-on-re-read handling in the engine layer.
     pub fn set_progress(&self, story_id: i64, episode_seq: i64, scene_seq: i64) -> Result<bool> {

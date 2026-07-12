@@ -262,6 +262,9 @@ fn dispatch(
         "report_leak" => {
             jv(api.report_leak(i("bookId"), &s("reason"), &s("excerpt"), &s("comment"))?)
         }
+        "export_bundle" => api.export_bundle(a["bookId"].as_i64(), &s("scope")),
+        "import_bundle" => api.import_bundle(&s("json")),
+        "forget_conversations" => jv(api.forget_conversations(i("bookId"))?),
         "forge_ledger" => {
             let ev = events.clone();
             let book_id = i("bookId");

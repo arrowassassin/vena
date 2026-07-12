@@ -449,6 +449,160 @@ impl AppApi {
         self.store().get_book(book_id)
     }
 
+    // ============================ Portability & sharing ============================
+    //
+    // Vena is zero-server, so sync and social both ride PORTABLE FILES the user moves
+    // themselves (email, AirDrop, a shared Dropbox/iCloud/Syncthing folder). A bundle
+    // carries ONLY the user's own layer — progress, theories, spoiler-consent — never
+    // canon or the ledger (those stay on-device; keeps bundles tiny and copyright-safe)
+    // and never chat text (private by default). Books are matched by slug on import, so
+    // both devices must already have the book. Two scopes:
+    //   "sync"     — progress + theories + consent (your own devices, last-writer-wins)
+    //   "theories" — theories only (book-club sharing, leaks no reading position)
+
+    /// Export a portable bundle. `book_id = None` exports the whole shelf.
+    pub fn export_bundle(&self, book_id: Option<i64>, scope: &str) -> Result<serde_json::Value> {
+        let store = self.store();
+        let books: Vec<BookMeta> = match book_id {
+            Some(id) => vec![store.get_book(id)?],
+            None => store.list_books()?,
+        };
+        let include_progress = scope != "theories";
+        let mut out = Vec::new();
+        for b in books {
+            let theories: Vec<serde_json::Value> = store
+                .list_theories(b.id)?
+                .into_iter()
+                .map(|t| {
+                    serde_json::json!({
+                        "text": t.text,
+                        "logged_at_chapter": t.logged_at_chapter,
+                    })
+                })
+                .collect();
+            let mut entry = serde_json::json!({
+                "slug": b.slug,
+                "title": b.title,
+                "package_sha": b.package_sha,
+                "theories": theories,
+            });
+            if include_progress {
+                let (ep, sc) = store.get_progress(b.id)?;
+                entry["progress"] = serde_json::json!({
+                    "episode": ep,
+                    "scene": sc,
+                    "updated_at": store.progress_updated_at(b.id)?.unwrap_or_default(),
+                });
+                entry["spoiler_consent"] =
+                    serde_json::json!(vena_core::wiki::has_consent(&store, b.id)?);
+            }
+            out.push(entry);
+        }
+        Ok(serde_json::json!({
+            "vena_bundle_version": 1,
+            "scope": if include_progress { "sync" } else { "theories" },
+            "exported_at": chrono_now(),
+            "books": out,
+        }))
+    }
+
+    /// Import a bundle produced by `export_bundle`. Books absent from the shelf are
+    /// skipped (canon isn't in the bundle). Progress merges last-writer-wins by
+    /// timestamp; theories merge as a union deduped on normalized text; a rewind that
+    /// wins triggers the usual re-seal. Returns a human-readable report.
+    pub fn import_bundle(&self, json: &str) -> Result<serde_json::Value> {
+        let bundle: serde_json::Value =
+            serde_json::from_str(json).map_err(|e| VenaError::InvalidPackage(e.to_string()))?;
+        if bundle["vena_bundle_version"].as_i64() != Some(1) {
+            return Err(VenaError::InvalidPackage(
+                "not a Vena bundle (or unsupported version)".into(),
+            ));
+        }
+        let mut matched = 0;
+        let mut progress_updated = 0;
+        let mut theories_added = 0;
+        let mut skipped: Vec<String> = Vec::new();
+
+        for entry in bundle["books"].as_array().cloned().unwrap_or_default() {
+            let slug = entry["slug"].as_str().unwrap_or_default();
+            // Match the book on the shelf by slug (canon must already be present).
+            let local = {
+                let store = self.store();
+                store.list_books()?.into_iter().find(|b| b.slug == slug)
+            };
+            let Some(local) = local else {
+                skipped.push(entry["title"].as_str().unwrap_or(slug).to_string());
+                continue;
+            };
+            matched += 1;
+
+            // ---- progress: last-writer-wins by updated_at ----
+            if let Some(p) = entry.get("progress") {
+                let incoming_at = p["updated_at"].as_str().unwrap_or_default();
+                let local_at = self
+                    .store()
+                    .progress_updated_at(local.id)?
+                    .unwrap_or_default();
+                let (local_ep, _) = self.store().get_progress(local.id)?;
+                // Accept the incoming position if this device hasn't read the book at
+                // all (a fresh import stamps updated_at = now, which would otherwise
+                // spuriously out-rank the sending device's older read timestamp), OR
+                // if the incoming write is strictly newer (last-writer-wins).
+                // Lexicographic compare works for SQLite datetime('now') strings.
+                if !incoming_at.is_empty() && (local_ep == 0 || incoming_at > local_at.as_str()) {
+                    let ep = p["episode"].as_i64().unwrap_or(0);
+                    let sc = p["scene"].as_i64().unwrap_or(0);
+                    self.store()
+                        .set_progress_synced(local.id, ep, sc, incoming_at)?;
+                    // A winning rewind re-seals, same as a manual rewind.
+                    if ep < local_ep {
+                        let store = self.store();
+                        if self.setting_bool_locked(&store, K_RESEAL, true) {
+                            store.reseal_after(local.id, ep)?;
+                            store.reopen_theories_after(local.id, ep)?;
+                        }
+                    }
+                    engine::resolve_theories(&self.store(), local.id)?;
+                    progress_updated += 1;
+                }
+                if let Some(c) = entry.get("spoiler_consent").and_then(|v| v.as_bool()) {
+                    vena_core::wiki::set_consent(&self.store(), local.id, c)?;
+                }
+            }
+
+            // ---- theories: union, deduped on normalized text ----
+            let existing: std::collections::HashSet<String> = self
+                .store()
+                .list_theories(local.id)?
+                .into_iter()
+                .map(|t| normalize_theory(&t.text))
+                .collect();
+            for t in entry["theories"].as_array().cloned().unwrap_or_default() {
+                let text = t["text"].as_str().unwrap_or_default();
+                if text.is_empty() || existing.contains(&normalize_theory(text)) {
+                    continue;
+                }
+                let at = t["logged_at_chapter"].as_i64().unwrap_or(0);
+                self.store().add_theory(local.id, text, at)?;
+                theories_added += 1;
+            }
+            engine::resolve_theories(&self.store(), local.id)?;
+        }
+
+        Ok(serde_json::json!({
+            "matched_books": matched,
+            "progress_updated": progress_updated,
+            "theories_added": theories_added,
+            "skipped_not_on_shelf": skipped,
+        }))
+    }
+
+    /// "Forget our conversations" (§6b): wipe chat + memory for a book, keeping the
+    /// book, ledger, progress, and theories.
+    pub fn forget_conversations(&self, book_id: i64) -> Result<()> {
+        self.store().forget_conversations(book_id)
+    }
+
     // ============================ Theories ============================
 
     pub fn add_theory(&self, book_id: i64, text: &str) -> Result<Theory> {
@@ -1068,6 +1222,17 @@ impl AppApi {
     pub fn data_dir(&self) -> &Path {
         &self.data_dir
     }
+}
+
+/// Normalize theory text for dedup on merge (lowercase, collapse whitespace, drop
+/// trailing punctuation) so "The Count is a vampire." == "the count is a vampire".
+fn normalize_theory(s: &str) -> String {
+    s.to_lowercase()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .trim_end_matches(['.', '!', '?', ' '])
+        .to_string()
 }
 
 fn chrono_now() -> String {

@@ -113,6 +113,59 @@ fn ai_status_defaults_to_cloud_steer() {
 }
 
 #[test]
+fn portable_bundle_syncs_progress_and_theories_across_devices() {
+    // Device A: read to ch8, pin two theories.
+    let a = AppApi::in_memory().unwrap();
+    let book_a = a.store_download(&dracula_item(), |_, _| {}).unwrap();
+    a.set_progress(book_a.id, 8, 0).unwrap();
+    a.add_theory(book_a.id, "The Count controls the weather")
+        .unwrap();
+    a.add_theory(book_a.id, "Renfield serves a hidden master")
+        .unwrap();
+
+    let bundle = a.export_bundle(Some(book_a.id), "sync").unwrap();
+    let bundle_str = bundle.to_string();
+
+    // Device B: same book, fresh (progress 0, no theories). Import the bundle.
+    let b = AppApi::in_memory().unwrap();
+    let book_b = b.store_download(&dracula_item(), |_, _| {}).unwrap();
+    let report = b.import_bundle(&bundle_str).unwrap();
+    assert_eq!(report["matched_books"], 1);
+    assert_eq!(report["progress_updated"], 1);
+    assert_eq!(report["theories_added"], 2);
+
+    // B now mirrors A's progress + theories.
+    assert_eq!(b.get_book(book_b.id).unwrap().progress_episode, 8);
+    assert_eq!(b.list_theories(book_b.id).unwrap().len(), 2);
+
+    // Re-importing the SAME bundle is idempotent (dedup on text, LWW on progress).
+    let again = b.import_bundle(&bundle_str).unwrap();
+    assert_eq!(again["theories_added"], 0);
+    assert_eq!(again["progress_updated"], 0);
+
+    // "theories" scope shares no reading position (book-club safe).
+    let theories_only = a.export_bundle(Some(book_a.id), "theories").unwrap();
+    assert!(theories_only["books"][0].get("progress").is_none());
+
+    // A book not on the importer's shelf is skipped, not errored (in_memory starts empty).
+    let c = AppApi::in_memory().unwrap();
+    assert!(c.list_books().unwrap().is_empty());
+    let skipped = c.import_bundle(&bundle_str).unwrap();
+    assert_eq!(skipped["matched_books"], 0);
+    assert_eq!(skipped["skipped_not_on_shelf"].as_array().unwrap().len(), 1);
+}
+
+#[test]
+fn forget_conversations_keeps_book_and_theories() {
+    let api = AppApi::in_memory().unwrap();
+    let book = api.store_download(&dracula_item(), |_, _| {}).unwrap();
+    api.add_theory(book.id, "a theory").unwrap();
+    api.forget_conversations(book.id).unwrap(); // no chats yet — must not error
+    assert!(api.get_book(book.id).is_ok());
+    assert_eq!(api.list_theories(book.id).unwrap().len(), 1);
+}
+
+#[test]
 fn relay_presets_and_one_tap_setup() {
     let api = AppApi::in_memory().unwrap();
     let presets = api.relay_presets();
