@@ -136,6 +136,9 @@ pub fn forge_to_db(
             .and_then(|s| s.parse::<i64>().ok())
     };
     let mut fact_count = 0;
+    // Collect derived-edge candidates from relationship facts so each cites its
+    // source fact id (v2.0 §6b: "every edge cites its source fact").
+    let mut derived: Vec<(String, String, i64, i64)> = Vec::new(); // from_key,to_key,since,source_fact_id
     for f in &ledger.facts {
         if f.chapter < 1 || f.chapter > n_chapters {
             continue;
@@ -151,7 +154,7 @@ pub fn forge_to_db(
                 })
             })
             .collect();
-        store.insert_fact(&Fact {
+        let fact_id = store.insert_fact(&Fact {
             id: 0,
             story_id: sid,
             chapter_seq: f.chapter,
@@ -162,25 +165,58 @@ pub fn forge_to_db(
             spoiler_weight: f.spoiler_weight.clamp(0, 3),
         })?;
         fact_count += 1;
+
+        if matches!(f.kind, vena_core::model::FactKind::Relationship) {
+            if let Some(subject) = f.subject.as_deref().and_then(|s| key_of.get(&norm(s))) {
+                for (participant, _) in &f.known_by {
+                    if let Some(pkey) = key_of.get(&norm(participant)) {
+                        if pkey != subject {
+                            derived.push((subject.clone(), pkey.clone(), f.chapter, fact_id));
+                        }
+                    }
+                }
+            }
+        }
     }
 
-    // Edges (resolve endpoint names to entity keys; skip unresolved).
+    // Edges: explicit (authored, no single source fact) + derived (cite source).
+    // Dedup by (from,to,rel_type,since).
+    let mut seen: std::collections::HashSet<(String, String, String, i64)> = Default::default();
     let mut edge_count = 0;
     for e in &ledger.edges {
         let (Some(from), Some(to)) = (key_of.get(&norm(&e.from)), key_of.get(&norm(&e.to))) else {
             continue;
         };
-        store.add_edge(
-            sid,
-            from,
-            to,
-            &e.rel_type,
+        if seen.insert((
+            from.clone(),
+            to.clone(),
+            e.rel_type.clone(),
             e.since_chapter,
-            e.until_chapter,
-            None,
-        )?;
-        edge_count += 1;
+        )) {
+            store.add_edge(
+                sid,
+                from,
+                to,
+                &e.rel_type,
+                e.since_chapter,
+                e.until_chapter,
+                None,
+            )?;
+            edge_count += 1;
+        }
     }
+    for (from, to, since, source_fact_id) in derived {
+        if seen.insert((from.clone(), to.clone(), "knows".into(), since)) {
+            store.add_edge(sid, &from, &to, "knows", since, None, Some(source_fact_id))?;
+            edge_count += 1;
+        }
+    }
+
+    // §11.3: a package ships with user tables EMPTY. insert_story seeds a default
+    // progress row; clear it so the .vena carries no user state.
+    store
+        .conn()
+        .execute("DELETE FROM progress WHERE story_id=?1", [sid])?;
 
     // Self-audit: ledger-coverage score (twist coverage across chapters).
     let coverage = coverage_score(&store, sid, n_chapters)?;

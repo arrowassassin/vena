@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/vena-core", "crates/vena-forge"]
+members = ["crates/vena-core", "crates/vena-forge", "crates/vena-eval"]
 # vena-app (Tauri) is added in Segment 4; it lives in crates/vena-app but is kept
 # out of the default workspace build so the engine crates build without the Tauri
 # system dependencies. Build it explicitly from crates/vena-app.

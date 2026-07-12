@@ -1870,6 +1870,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "vena-eval"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "serde",
+ "serde_json",
+ "vena-core",
+ "vena-forge",
+]
+
+[[package]]
 name = "vena-forge"
 version = "0.1.0"
 dependencies = [

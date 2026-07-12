@@ -54,3 +54,51 @@ as the internal term).
   consent, 5-stage engine, scope discipline: all PASS.
 
 **Segment 1 DONE** (both testers pass after the HIGH fix).
+
+---
+
+## Segment 2 — Forge + real Dracula package
+
+**Delivered:** `vena-forge` (real EPUB + Gutenberg-txt importer, §F5c format detection, scene
+segmentation, Appendix-B model ledger path + maintainer-curated path, story-graph edge
+derivation), `vena-core::pkg` (.vena export/import with FK remapping), and the REAL
+public-domain Dracula forged to `data/packages/dracula.vena` (27 ch · 440 scenes · 10 chars ·
+40 facts · 16 edges · 81% coverage). End-to-end roundtrip test on the real book.
+
+### UX TESTER — VERDICT: FAIL → resolved → PASS
+- **MED — SHA label mismatch (FIXED).** The CLI printed a headline "PACKAGE SHA" = the zip-file
+  hash, but the app persists/shows the *content* SHA — a maintainer cross-check would disagree.
+  **Fix:** CLI now prints **LEDGER SHA** (the persisted content identity shown in-app,
+  uppercased to match design status rows) and **ARCHIVE SHA** (file integrity, clearly labelled).
+- LOW (evidence units chars/doc vs "words/page"; SHA case) — cosmetic; the UI formats the raw
+  hex field itself. Profile taxonomy + status fields all PASS.
+
+### PM TESTER — VERDICT: PASS (3 defects, all resolved)
+- Real full Dracula (not a stub), real forge pipeline (model path wired to real HTTP inference;
+  curated path a legitimate §7 prebuilt), .vena format §11.3, format detection §F5c, story graph
+  §6b, canon immutability, Cloud-Relay-vs-forge separation: all PASS.
+- **D1 MED — empty vena-eval broke root build (RESOLVED):** the eval crate is now a real member
+  (segment 3).
+- **D2 MED — derived edges didn't cite source fact (FIXED):** edge derivation moved into the
+  forge (after facts exist); each derived `knows` edge now stores `source_fact_id`.
+- **D3 LOW — package shipped a default `progress` row (FIXED):** the forge now clears the
+  `progress` table so the .vena ships with user tables empty (§11.3).
+
+**Segment 2 DONE** (both testers pass after fixes).
+
+---
+
+## Segment 3 — Eval harness + Phase-1 checkpoint
+
+**Delivered:** `vena-eval` — real interview runner (Appendix C JSONL), two modes (generative
+against a configured backend; deterministic gate-audit with none), reporting leak %,
+consistency %, latency p50/p95, redaction %, and the GO/PIVOT/KILL verdict. Interview set
+`data/eval/dracula.jsonl` (24 point-in-time interviews). Verdict recorded in **EVAL.md**.
+
+**Checkpoint result:** gate-audit over the real Dracula package → **0 leaks / 24** →
+**GO (containment)**. Generative consistency unmeasurable in-sandbox (no reachable GGUF host,
+no API key), so per the §11.5 "below-GO → steer" rule the conservative choice is taken:
+**Cloud Relay is the default chat mode; local chat is labelled "experimental (unmeasured)"**
+until the generative eval is run (documented in EVAL.md). The run continues.
+
+_(UX/PM tester entries for segment 3 appended below.)_

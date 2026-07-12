@@ -155,12 +155,19 @@ fn main() -> Result<()> {
                 "  COVERAGE {}%",
                 (stats.ledger_coverage * 100.0).round() as i64
             );
+            // LEDGER SHA = the package's content identity persisted in the .vena and
+            // shown in the app's status rows (BookMeta.package_sha). ARCHIVE SHA =
+            // the raw .vena file hash, for download/catalog integrity only.
             println!(
-                "  CONTENT SHA {}…{}",
-                &stats.content_sha[..8],
-                &stats.content_sha[stats.content_sha.len() - 2..]
+                "  LEDGER SHA  {}…{}  (shown in-app)",
+                stats.content_sha[..8].to_uppercase(),
+                stats.content_sha[stats.content_sha.len() - 2..].to_uppercase()
             );
-            println!("  PACKAGE SHA {}…{}", &sha[..8], &sha[sha.len() - 2..]);
+            println!(
+                "  ARCHIVE SHA {}…{}  (file integrity)",
+                sha[..8].to_uppercase(),
+                sha[sha.len() - 2..].to_uppercase()
+            );
         }
 
         Cmd::Import { vena } => {

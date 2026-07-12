@@ -170,8 +170,8 @@ pub fn load_curated(json: &str) -> Result<(CuratedLedger, Ledger)> {
             until_chapter: e.until_chapter,
         });
     }
-    // Also derive edges from relationship facts (v2.0), deduped against explicit ones.
-    derive_edges_into(&mut l);
+    // NB: derivation of edges from relationship facts (v2.0) happens in the forge,
+    // AFTER facts are inserted, so each derived edge can cite its source fact id.
     Ok((c, l))
 }
 
@@ -295,51 +295,7 @@ pub fn extract_with_model(
         on_progress(ch.seq, total);
     }
 
-    derive_edges_into(&mut ledger);
     Ok(ledger)
-}
-
-/// v2.0: derive story-graph edges from relationship-kind facts. Every derived edge
-/// cites its source relationship (subject ↔ each known_by participant).
-fn derive_edges_into(l: &mut Ledger) {
-    let mut seen: std::collections::HashSet<(String, String, String, i64)> = l
-        .edges
-        .iter()
-        .map(|e| {
-            (
-                e.from.clone(),
-                e.to.clone(),
-                e.rel_type.clone(),
-                e.since_chapter,
-            )
-        })
-        .collect();
-    for f in &l.facts {
-        if !matches!(f.kind, FactKind::Relationship) {
-            continue;
-        }
-        let Some(subject) = &f.subject else { continue };
-        for (participant, _) in &f.known_by {
-            if participant == subject {
-                continue;
-            }
-            let key = (
-                subject.clone(),
-                participant.clone(),
-                "knows".to_string(),
-                f.chapter,
-            );
-            if seen.insert(key) {
-                l.edges.push(EdgeSpec {
-                    from: subject.clone(),
-                    to: participant.clone(),
-                    rel_type: "knows".into(),
-                    since_chapter: f.chapter,
-                    until_chapter: None,
-                });
-            }
-        }
-    }
 }
 
 /// Extract a JSON object from a model reply that may wrap it in prose/markdown.
