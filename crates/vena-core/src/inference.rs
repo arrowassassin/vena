@@ -98,7 +98,16 @@ pub struct OpenAiClient {
 
 impl OpenAiClient {
     pub fn new(base_url: &str, api_key: &str, model: &str) -> Self {
-        let base = base_url.trim_end_matches('/').to_string();
+        // Normalize the base to its ROOT (no trailing slash, no trailing `/v1`) so a
+        // user or preset can supply either `https://host/api` OR `https://host/api/v1`
+        // — the endpoint methods add exactly one `/v1/...`. (OpenAI-compatible servers
+        // and every relay preset advertise a base that includes `/v1`; appending
+        // another `/v1` produced `/v1/v1/chat/completions` and 404'd every request.)
+        let base = base_url
+            .trim_end_matches('/')
+            .trim_end_matches("/v1")
+            .trim_end_matches('/')
+            .to_string();
         OpenAiClient {
             remote: Self::is_remote_host(&base),
             base_url: base,
@@ -109,6 +118,11 @@ impl OpenAiClient {
                 .build()
                 .expect("http client"),
         }
+    }
+
+    /// The fully-resolved chat endpoint — exactly one `/v1/chat/completions`.
+    pub fn chat_endpoint(&self) -> String {
+        format!("{}/v1/chat/completions", self.base_url)
     }
 
     /// A URL is on-device only if it targets loopback. Everything else is remote and
@@ -145,7 +159,13 @@ pub struct AnthropicClient {
 impl AnthropicClient {
     pub fn new(base_url: &str, api_key: &str, model: &str) -> Self {
         AnthropicClient {
-            base_url: base_url.trim_end_matches('/').to_string(),
+            // Anthropic's endpoint is `{base}/v1/messages`; tolerate a base given with
+            // or without a trailing `/v1` (same normalization as OpenAiClient).
+            base_url: base_url
+                .trim_end_matches('/')
+                .trim_end_matches("/v1")
+                .trim_end_matches('/')
+                .to_string(),
             api_key: api_key.to_string(),
             model: model.to_string(),
             http: reqwest::blocking::Client::builder()
@@ -248,7 +268,7 @@ impl Inference for OpenAiClient {
         }
         let resp = self
             .http
-            .post(format!("{}/v1/chat/completions", self.base_url))
+            .post(self.chat_endpoint())
             .bearer_auth(&self.api_key)
             .json(&body)
             .send()
@@ -267,5 +287,35 @@ impl Inference for OpenAiClient {
             .ok_or_else(|| VenaError::Inference("no content in response".into()))?
             .to_string();
         Ok(text)
+    }
+}
+
+#[cfg(test)]
+mod url_tests {
+    use super::OpenAiClient;
+
+    #[test]
+    fn chat_endpoint_never_doubles_v1() {
+        // Base WITH /v1 (every relay preset + most OpenAI-compat servers advertise this).
+        for base in [
+            "https://openrouter.ai/api/v1",
+            "https://openrouter.ai/api/v1/",
+            "http://localhost:11434/v1",
+            "https://api.groq.com/openai/v1",
+        ] {
+            let c = OpenAiClient::new(base, "k", "m");
+            let url = c.chat_endpoint();
+            assert!(
+                !url.contains("/v1/v1/"),
+                "doubled /v1 for base {base}: {url}"
+            );
+            assert!(url.ends_with("/v1/chat/completions"), "{url}");
+        }
+        // Base WITHOUT /v1 also resolves to exactly one.
+        let c = OpenAiClient::new("https://openrouter.ai/api", "k", "m");
+        assert_eq!(
+            c.chat_endpoint(),
+            "https://openrouter.ai/api/v1/chat/completions"
+        );
     }
 }

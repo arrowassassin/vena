@@ -842,7 +842,12 @@ impl AppApi {
             .get(KC_CLOUD_KEY)?
             .or_else(|| std::env::var("VENA_API_KEY").ok())
             .unwrap_or_default();
-        let url = format!("{}/v1/models", base.trim_end_matches('/'));
+        // Normalize base to root (tolerate a trailing `/v1`, like OpenAiClient).
+        let root = base
+            .trim_end_matches('/')
+            .trim_end_matches("/v1")
+            .trim_end_matches('/');
+        let url = format!("{root}/v1/models");
         let resp = reqwest::blocking::Client::new()
             .get(&url)
             .bearer_auth(&key)
