@@ -418,6 +418,11 @@ async fn translate_selection(
 // ============================ Models & settings ============================
 
 #[tauri::command]
+fn set_local_validated(api: State<'_, Api>, validated: bool) -> Result<(), VenaError> {
+    api.set_local_validated(validated)
+}
+
+#[tauri::command]
 fn get_ai_status(api: State<'_, Api>) -> Result<AiStatus, VenaError> {
     api.get_ai_status()
 }
@@ -560,6 +565,7 @@ fn main() {
             generate_cover,
             lookup_word,
             translate_selection,
+            set_local_validated,
             get_ai_status,
             set_api_config,
             set_image_config,

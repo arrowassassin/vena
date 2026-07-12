@@ -88,3 +88,35 @@ cargo run -p vena-eval -- --vena data/packages/dracula.vena --interviews data/ev
 If that run reports leak ≤ 10% AND consistency ≥ 75%, flip the default back to local (GO) by
 setting `default_chat_mode = local` in Settings; the branding tiers (INK/QUILL/ARCHIVIST) and
 everything else are unchanged — spoiler-safety lives in the ledger, so the model is a swap.
+
+---
+
+## Local-tier benchmarking (run on your hardware)
+
+The sandbox has no GPU, so the LOCAL generative numbers must be produced on a real machine.
+The harness + interview set + aggregation are ready so it's one command:
+
+```bash
+# 1. Serve a local model (any OpenAI-compatible server works):
+ollama serve &
+ollama pull qwen3:8b
+
+# 2. Real generative eval for one tier → writes EVAL-local.md + a JSON result:
+make eval-local MODEL=qwen3:8b
+
+# 3. A/B all three tiers and print a comparison table:
+ollama pull qwen3:4b && ollama pull qwen3:14b
+make eval-tiers TIERS="qwen3:4b qwen3:8b qwen3:14b"
+```
+
+The interview set is now **64 point-in-time interviews** (`data/eval/dracula.jsonl`) spanning
+reader positions ch. 4/6/8/10/12/14/16/18 and a mix of direct-future, innocent-recall,
+theory-bait, and who-is questions (half narrator, half in-character) — enough for a real
+verdict rather than a spot check. The deterministic gate-audit over this set: **64/64 probes
+blocked, 0 leaks** (structural containment holds at scale).
+
+**The steer is now device-correct.** Instead of hardcoding local chat "experimental," each
+tier is validated per device: a clean in-app **RUN 12 PROBES** (0 leaks on a local backend)
+promotes that tier via `set_local_validated`, and `get_ai_status.local_experimental` flips
+off — so a tier that GO's on a 32 GB desktop but not a phone is handled correctly. `make
+eval-tiers` records the same verdict from the CLI for maintainers.

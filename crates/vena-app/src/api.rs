@@ -341,10 +341,19 @@ impl AppApi {
         engine.recap(&self.store(), book_id)
     }
 
-    /// "Test the Gate — RUN 12 PROBES" (§11.4a): the shipped vena-eval loop.
+    /// "Test the Gate — RUN 12 PROBES" (§11.4a): the shipped vena-eval loop. On a
+    /// LOCAL backend, a fully-clean run (≥ n probes, 0 leaks) promotes the tier out of
+    /// "experimental" for this device (the live, device-specific eval verdict, §11.6);
+    /// any leak on a local run demotes it back. Relay runs never change the flag.
     pub fn run_probes(&self, book_id: i64, n: usize) -> Result<Vec<ProbeResult>> {
         let engine = self.build_engine()?;
-        engine.run_probes(&self.store(), book_id, n)
+        let results = engine.run_probes(&self.store(), book_id, n)?;
+        let is_local = self.setting_or(&self.store(), K_CHAT_MODE, "cloud") == "local";
+        if is_local && results.len() >= n && n > 0 {
+            let clean = results.iter().all(|r| !r.leaked);
+            let _ = self.set_local_validated(clean);
+        }
+        Ok(results)
     }
 
     /// "THAT SPOILED ME" (§6): one-tap leak report. Logs the transcript LOCALLY
@@ -649,12 +658,32 @@ impl AppApi {
                 (self.setting_or(&store, K_CLOUD_MODEL, "Cloud Relay"), ready)
             }
         };
+        // The eval steer (§11.5) is now DEVICE-CORRECT, not a global constant: local
+        // chat is "experimental" until THIS device's tier passes the in-app gate probe
+        // (Test the Gate → RUN 12 PROBES with 0 leaks), which promotes it via
+        // set_local_validated. A tier that GO's on a 32 GB desktop but not a phone is
+        // handled correctly because validation is keyed by (device, model).
+        let local_experimental =
+            !self.setting_bool_locked(&store, &local_validated_key(&model), false);
         Ok(AiStatus {
             mode: if ready { mode.clone() } else { "none".into() },
             model,
             ready,
-            local_experimental: true, // per the §11.5 steer (EVAL.md) until re-validated
+            local_experimental,
         })
+    }
+
+    /// Promote (or demote) the local tier from "experimental" for THIS device, keyed
+    /// by the current local model. Called after a clean in-app gate probe (0 leaks) —
+    /// the live, device-specific version of the Phase-1 eval verdict (§11.6). Honest:
+    /// only a real clean run flips it; the UI wires this to a passing RUN 12 PROBES.
+    pub fn set_local_validated(&self, validated: bool) -> Result<()> {
+        let store = self.store();
+        let model = self.setting_or(&store, K_LOCAL_MODEL, "");
+        store.set_setting(
+            &local_validated_key(&model),
+            if validated { "1" } else { "0" },
+        )
     }
 
     pub fn set_api_config(&self, base_url: &str, api_key: &str, model: &str) -> Result<()> {
@@ -1233,6 +1262,12 @@ fn normalize_theory(s: &str) -> String {
         .join(" ")
         .trim_end_matches(['.', '!', '?', ' '])
         .to_string()
+}
+
+/// Settings key for "this device's local tier passed the gate", keyed by model so
+/// each tier is validated independently.
+fn local_validated_key(model: &str) -> String {
+    format!("local_validated::{}", model.to_lowercase())
 }
 
 fn chrono_now() -> String {

@@ -321,6 +321,9 @@ fn dispatch(
         "translate_selection" => {
             jv(api.translate_selection(i("bookId"), &s("text"), &s("targetLang"))?)
         }
+        "set_local_validated" => {
+            jv(api.set_local_validated(a["validated"].as_bool().unwrap_or(false))?)
+        }
         "get_ai_status" => jv(api.get_ai_status()?),
         "set_api_config" => jv(api.set_api_config(&s("baseUrl"), &s("apiKey"), &s("model"))?),
         "set_image_config" => jv(api.set_image_config(&s("baseUrl"), &s("apiKey"), &s("model"))?),

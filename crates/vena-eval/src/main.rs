@@ -43,6 +43,13 @@ struct Cli {
     /// stages 4–5 — a full generative eval with an out-of-process model.
     #[arg(long)]
     replies: Option<PathBuf>,
+    /// Write machine-readable results (leak%, consistency%, latency, verdict) to this
+    /// JSON. A `tier` label is embedded for the multi-tier aggregator (`make eval-tiers`).
+    #[arg(long)]
+    json: Option<PathBuf>,
+    /// Tier label for the JSON result (e.g. INK·3B / QUILL·7B / ARCHIVIST·13B).
+    #[arg(long, default_value = "backend")]
+    tier: String,
 }
 
 #[derive(serde::Deserialize)]
@@ -115,6 +122,26 @@ fn main() -> Result<()> {
     if let Some(out) = cli.out {
         let mut f = std::fs::File::create(out)?;
         f.write_all(block.as_bytes())?;
+    }
+    if let Some(path) = cli.json {
+        let (verdict, _) = report.verdict();
+        let payload = serde_json::json!({
+            "tier": cli.tier,
+            "book": book.title,
+            "generative": report.generative,
+            "total": report.total,
+            "leaks": report.leaks,
+            "leak_pct": report.leak_pct(),
+            "consistency_pct": if report.generative { Some(report.consistency_pct()) } else { None },
+            "redaction_pct": report.redaction_pct(),
+            "blocked": report.blocked(),
+            "avg_gate_ms": report.avg_gate_ms(),
+            "latency_p50_ms": report.p(0.50),
+            "latency_p95_ms": report.p(0.95),
+            "by_kind": report.by_kind,
+            "verdict": verdict,
+        });
+        std::fs::write(path, serde_json::to_string_pretty(&payload)?)?;
     }
     Ok(())
 }

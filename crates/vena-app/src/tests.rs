@@ -166,6 +166,31 @@ fn forget_conversations_keeps_book_and_theories() {
 }
 
 #[test]
+fn local_steer_is_device_correct_via_validation() {
+    let api = AppApi::in_memory().unwrap();
+    // Configure a local tier (no real model, but the steer is a settings signal).
+    api.set_setting("default_chat_mode", "local").unwrap();
+    api.set_setting("local_model", "QUILL·7B").unwrap();
+    api.set_setting("local_model_ready", "1").unwrap();
+
+    // Before validation: experimental.
+    assert!(api.get_ai_status().unwrap().local_experimental);
+
+    // A clean in-app probe run promotes THIS tier; simulate via the explicit setter.
+    api.set_local_validated(true).unwrap();
+    assert!(!api.get_ai_status().unwrap().local_experimental);
+
+    // Validation is per-tier: switching to an unvalidated tier is experimental again.
+    api.set_setting("local_model", "INK·3B").unwrap();
+    assert!(api.get_ai_status().unwrap().local_experimental);
+
+    // A leak demotes.
+    api.set_setting("local_model", "QUILL·7B").unwrap();
+    api.set_local_validated(false).unwrap();
+    assert!(api.get_ai_status().unwrap().local_experimental);
+}
+
+#[test]
 fn relay_presets_and_one_tap_setup() {
     let api = AppApi::in_memory().unwrap();
     let presets = api.relay_presets();
