@@ -1,0 +1,30 @@
+[workspace]
+resolver = "2"
+members = ["crates/vena-core"]
+# vena-app (Tauri) is added in Segment 4; it lives in crates/vena-app but is kept
+# out of the default workspace build so the engine crates build without the Tauri
+# system dependencies. Build it explicitly from crates/vena-app.
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "AGPL-3.0-or-later"
+authors = ["Vena maintainers"]
+
+[workspace.dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+rusqlite = { version = "0.40", features = ["bundled"] }
+anyhow = "1"
+thiserror = "2"
+reqwest = { version = "0.12", features = ["json", "blocking", "stream"] }
+tokio = { version = "1", features = ["full"] }
+clap = { version = "4", features = ["derive"] }
+regex = "1"
+quick-xml = "0.37"
+zip = "2"
+sha2 = "0.10"
+tracing = "0.1"
+
+[profile.release]
+lto = true

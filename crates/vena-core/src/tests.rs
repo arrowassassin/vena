@@ -1,0 +1,362 @@
+//! Kernel unit tests (§11.5 segment 1 exit criteria): gate correctness (future
+//! facts invisible; per-character knowledge lags the reader), verify/leak taxonomy,
+//! engine repair/redact, guard-fates, theory resolution, wiki consent, burn, re-seal.
+
+use crate::engine::{resolve_theories, Engine};
+use crate::inference::ScriptedInference;
+use crate::model::*;
+use crate::store::Store;
+use crate::wiki::{self, WikiMode};
+
+fn kb(character_id: i64, learned: i64) -> KnownBy {
+    KnownBy {
+        character_id,
+        learned_at_chapter: learned,
+    }
+}
+
+/// A small Dracula-shaped fixture. Returns (store, story_id, {char ids}).
+fn fixture() -> (Store, i64, std::collections::HashMap<&'static str, i64>) {
+    let s = Store::in_memory().unwrap();
+    let sid = s
+        .insert_story(
+            "dracula",
+            "Dracula",
+            Some("Bram Stoker"),
+            "public-domain",
+            None,
+            None,
+            "{}",
+        )
+        .unwrap();
+
+    let mut ids = std::collections::HashMap::new();
+    ids.insert(
+        "jonathan",
+        s.insert_character(
+            sid,
+            "Jonathan Harker",
+            &["Harker".into()],
+            &VoiceCard::default(),
+            1,
+        )
+        .unwrap(),
+    );
+    ids.insert(
+        "mina",
+        s.insert_character(
+            sid,
+            "Mina Murray",
+            &["Mina".into()],
+            &VoiceCard::default(),
+            3,
+        )
+        .unwrap(),
+    );
+    ids.insert(
+        "lucy",
+        s.insert_character(
+            sid,
+            "Lucy Westenra",
+            &["Lucy".into()],
+            &VoiceCard::default(),
+            5,
+        )
+        .unwrap(),
+    );
+    ids.insert(
+        "vanhelsing",
+        s.insert_character(
+            sid,
+            "Van Helsing",
+            &["Abraham Van Helsing".into()],
+            &VoiceCard::default(),
+            9,
+        )
+        .unwrap(),
+    );
+
+    let mut fact = |chapter, subject: Option<i64>, kind, text: &str, known: Vec<KnownBy>, w| {
+        s.insert_fact(&Fact {
+            id: 0,
+            story_id: sid,
+            chapter_seq: chapter,
+            subject_char_id: subject,
+            kind,
+            text: text.to_string(),
+            known_by: known,
+            spoiler_weight: w,
+        })
+        .unwrap()
+    };
+
+    let j = ids["jonathan"];
+    let m = ids["mina"];
+    let l = ids["lucy"];
+    fact(
+        1,
+        Some(j),
+        FactKind::Event,
+        "Jonathan Harker travels to Transylvania",
+        vec![kb(j, 1)],
+        1,
+    );
+    fact(
+        2,
+        None,
+        FactKind::Reveal,
+        "The Count is a vampire",
+        vec![kb(j, 2)],
+        3,
+    );
+    // Reader learns at ch3 that Mina and Jonathan are engaged, but Lucy only
+    // hears of it at ch8 — character knowledge lags the reader.
+    fact(
+        3,
+        Some(m),
+        FactKind::Relationship,
+        "Mina and Jonathan are engaged",
+        vec![kb(m, 3), kb(l, 8)],
+        1,
+    );
+    fact(
+        12,
+        Some(l),
+        FactKind::Death,
+        "Lucy dies",
+        vec![kb(m, 12)],
+        3,
+    );
+    fact(
+        20,
+        None,
+        FactKind::Reveal,
+        "Dracula is destroyed at the castle",
+        vec![],
+        3,
+    );
+
+    (s, sid, ids)
+}
+
+#[test]
+fn gate_hides_future_facts() {
+    let (s, sid, _) = fixture();
+    s.set_progress(sid, 4, 0).unwrap();
+    let visible = s.gated_facts(sid, 4, None, "", 50).unwrap();
+    // chapters 1,2,3 visible; 12 and 20 hidden.
+    assert!(visible.iter().all(|f| f.chapter_seq <= 4));
+    assert!(visible.iter().any(|f| f.text.contains("vampire")));
+    assert!(!visible.iter().any(|f| f.text.contains("Lucy dies")));
+    assert!(!visible.iter().any(|f| f.text.contains("destroyed")));
+}
+
+#[test]
+fn per_character_knowledge_lags_reader() {
+    let (s, sid, ids) = fixture();
+    // Reader at chapter 5: narrator sees "Mina and Jonathan are engaged" (ch3).
+    let narrator = s.gated_facts(sid, 5, None, "", 50).unwrap();
+    assert!(narrator.iter().any(|f| f.text.contains("engaged")));
+
+    // Lucy at chapter 5 does NOT know it yet (she learns at ch8).
+    let lucy = s.gated_facts(sid, 5, Some(ids["lucy"]), "", 50).unwrap();
+    assert!(!lucy.iter().any(|f| f.text.contains("engaged")));
+
+    // At chapter 8 Lucy now knows it.
+    let lucy8 = s.gated_facts(sid, 8, Some(ids["lucy"]), "", 50).unwrap();
+    assert!(lucy8.iter().any(|f| f.text.contains("engaged")));
+}
+
+#[test]
+fn forbidden_includes_future_and_character_lag() {
+    let (s, sid, ids) = fixture();
+    // Narrator at ch5: forbidden = future facts only (ch12, ch20).
+    let forb = s.forbidden_facts(sid, 5, None).unwrap();
+    assert!(forb.iter().any(|f| f.text.contains("Lucy dies")));
+    assert!(!forb.iter().any(|f| f.text.contains("engaged")));
+
+    // Lucy at ch5: "engaged" (ch3, she learns ch8) is forbidden for her.
+    let forb_lucy = s.forbidden_facts(sid, 5, Some(ids["lucy"])).unwrap();
+    assert!(forb_lucy.iter().any(|f| f.text.contains("engaged")));
+}
+
+#[test]
+fn verify_flags_future_event() {
+    let (s, sid, _) = fixture();
+    s.set_progress(sid, 6, 0).unwrap();
+    let visible = s.gated_facts(sid, 6, None, "Lucy", 50).unwrap();
+    let forbidden = s.forbidden_facts(sid, 6, None).unwrap();
+    let check = crate::verify::match_claim("Lucy dies and rises again", &visible, &forbidden, 0.6);
+    assert_eq!(check.verdict, "violation");
+    assert_eq!(check.leak_kind, Some(LeakKind::FutureEvent));
+}
+
+#[test]
+fn verify_flags_unmet_character() {
+    let (s, sid, _) = fixture();
+    s.set_progress(sid, 6, 0).unwrap(); // Van Helsing appears ch9 -> unmet
+    let unmet = s.unmet_character_names(sid).unwrap();
+    let hits = crate::verify::unmet_characters(
+        "Perhaps Van Helsing could help us.",
+        unmet.iter().map(String::as_str),
+    );
+    assert!(hits.iter().any(|h| h == "Van Helsing"));
+    // A met character is not flagged.
+    let none =
+        crate::verify::unmet_characters("Jonathan is brave.", unmet.iter().map(String::as_str));
+    assert!(none.is_empty());
+}
+
+#[test]
+fn engine_standard_repairs_then_clean() {
+    let (s, sid, _) = fixture();
+    s.set_progress(sid, 6, 0).unwrap();
+    // First draft leaks the ch12 death; repair regen is clean.
+    let backend = ScriptedInference::new(vec![
+        "It troubles me — and I fear Lucy dies before this is over.".into(),
+        "It troubles me greatly; I cannot say how it will end.".into(),
+    ]);
+    let eng = Engine::new(Box::new(backend)).with_mode(GateMode::Standard);
+    let mut stages = Vec::new();
+    let report = eng
+        .companion_turn(
+            &s,
+            sid,
+            None,
+            "What do you make of Lucy's illness?",
+            &mut |st| stages.push(st.to_string()),
+        )
+        .unwrap();
+    assert!(report.repaired, "a repair should have occurred");
+    assert!(
+        !report.claims.iter().any(|c| c.verdict == "violation"),
+        "final reply must be clean: {:?}",
+        report.claims
+    );
+    assert!(!report.reply.to_lowercase().contains("lucy dies"));
+    assert_eq!(stages, vec!["gate", "compose", "verify"]);
+}
+
+#[test]
+fn engine_strict_redacts_immediately() {
+    let (s, sid, _) = fixture();
+    s.set_progress(sid, 6, 0).unwrap();
+    let backend = ScriptedInference::new(vec![
+        "I fear it deeply. Lucy dies before the tale is done.".into(),
+    ]);
+    let eng = Engine::new(Box::new(backend)).with_mode(GateMode::Strict);
+    let report = eng
+        .companion_turn(&s, sid, None, "Tell me about Lucy.", &mut |_| {})
+        .unwrap();
+    assert!(report.redacted, "STRICT must redact on any violation");
+    assert!(!report.reply.to_lowercase().contains("lucy dies"));
+}
+
+#[test]
+fn guard_fates_short_circuits_without_generation() {
+    let (s, sid, _) = fixture();
+    s.set_progress(sid, 6, 0).unwrap();
+    // Empty script: if generation were called it'd use the fallback line, but the
+    // guard should short-circuit before any backend call.
+    let backend = ScriptedInference::new(vec![]);
+    let mut eng = Engine::new(Box::new(backend));
+    eng.guard_fates = true;
+    let mut stages = Vec::new();
+    let report = eng
+        .companion_turn(&s, sid, None, "Does Lucy die?", &mut |st| {
+            stages.push(st.to_string())
+        })
+        .unwrap();
+    assert!(report.claims.is_empty());
+    assert!(!report.reply.to_lowercase().contains("die"));
+    // Only the gate stage ran; compose/verify were skipped.
+    assert_eq!(stages, vec!["gate"]);
+}
+
+#[test]
+fn theories_resolve_only_after_reveal() {
+    let (s, sid, _) = fixture();
+    let t = s.add_theory(sid, "Lucy dies from the illness", 6).unwrap();
+
+    // At chapter 6, the reveal (ch12) is still future — theory stays open.
+    s.set_progress(sid, 6, 0).unwrap();
+    resolve_theories(&s, sid).unwrap();
+    let open = s.list_theories(sid).unwrap();
+    assert!(open[0].resolved_status.is_none(), "must not resolve early");
+
+    // Pass the reveal → resolves.
+    s.set_progress(sid, 12, 0).unwrap();
+    resolve_theories(&s, sid).unwrap();
+    let resolved = s.list_theories(sid).unwrap();
+    assert_eq!(resolved[0].resolved_status.as_deref(), Some("confirmed"));
+    assert_eq!(resolved[0].resolved_at_chapter, Some(12));
+    let _ = t;
+}
+
+#[test]
+fn wiki_full_requires_consent() {
+    let (s, sid, _) = fixture();
+    s.set_progress(sid, 6, 0).unwrap();
+    // Synced always allowed.
+    assert!(wiki::get_wiki_index(&s, sid, WikiMode::Synced).is_ok());
+    // Full without consent is refused.
+    let err = wiki::get_wiki_index(&s, sid, WikiMode::Full).unwrap_err();
+    assert_eq!(err.code(), "SpoilerConsentRequired");
+    // Grant consent -> allowed, and future facts appear.
+    wiki::set_consent(&s, sid, true).unwrap();
+    let full = wiki::get_wiki_page(&s, sid, "char:3", WikiMode::Full).unwrap(); // Lucy = id 3
+    assert!(full.unsealed);
+    let has_death = full
+        .sections
+        .iter()
+        .any(|sec| sec.facts.iter().any(|f| f.contains("Lucy dies")));
+    assert!(has_death, "unsealed page shows the sealed fate");
+}
+
+#[test]
+fn wiki_synced_hides_future() {
+    let (s, sid, _) = fixture();
+    s.set_progress(sid, 6, 0).unwrap();
+    let page = wiki::get_wiki_page(&s, sid, "char:3", WikiMode::Synced).unwrap(); // Lucy
+    let leaks = page
+        .sections
+        .iter()
+        .any(|sec| sec.facts.iter().any(|f| f.contains("Lucy dies")));
+    assert!(!leaks, "synced wiki must not reveal ch12 death at ch6");
+}
+
+#[test]
+fn burn_book_removes_everything() {
+    let (s, sid, _) = fixture();
+    s.add_theory(sid, "a theory", 1).unwrap();
+    s.burn_book(sid).unwrap();
+    assert!(s.get_book(sid).is_err());
+    assert!(s.list_theories(sid).unwrap().is_empty());
+}
+
+#[test]
+fn reseal_reopens_theories_on_rewind() {
+    let (s, sid, _) = fixture();
+    s.add_theory(sid, "Lucy dies from the illness", 6).unwrap();
+    s.set_progress(sid, 12, 0).unwrap();
+    resolve_theories(&s, sid).unwrap();
+    assert!(s.list_theories(sid).unwrap()[0].resolved_status.is_some());
+
+    // Rewind to ch6: re-seal reopens the resolution.
+    let rewound = s.set_progress(sid, 6, 0).unwrap();
+    assert!(rewound, "set_progress should report a rewind");
+    s.reopen_theories_after(sid, 6).unwrap();
+    assert!(s.list_theories(sid).unwrap()[0].resolved_status.is_none());
+}
+
+#[test]
+fn probes_are_blocked_by_the_gate() {
+    let (s, sid, _) = fixture();
+    s.set_progress(sid, 6, 0).unwrap();
+    // Backend that naively parrots the question back (would leak if ungated).
+    let backend = ScriptedInference::new(vec![]).with_fallback("I cannot speak to that yet.");
+    let eng = Engine::new(Box::new(backend)).with_mode(GateMode::Standard);
+    let results = eng.run_probes(&s, sid, 12).unwrap();
+    assert!(!results.is_empty());
+    assert!(results.iter().all(|r| !r.leaked), "no probe should leak");
+}
