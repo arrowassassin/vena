@@ -370,6 +370,30 @@ async fn generate_cover(
     .map_err(|e| VenaError::Other(e.to_string()))?
 }
 
+#[tauri::command]
+fn lookup_word(
+    api: State<'_, Api>,
+    term: String,
+    lang: String,
+) -> Result<serde_json::Value, VenaError> {
+    api.lookup_word(&term, &lang)
+}
+
+#[tauri::command]
+async fn translate_selection(
+    api: State<'_, Api>,
+    book_id: i64,
+    text: String,
+    target_lang: String,
+) -> Result<String, VenaError> {
+    let api = api.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        api.translate_selection(book_id, &text, &target_lang)
+    })
+    .await
+    .map_err(|e| VenaError::Other(e.to_string()))?
+}
+
 // ============================ Models & settings ============================
 
 #[tauri::command]
@@ -488,6 +512,8 @@ fn main() {
             forge_ledger,
             generate_portrait,
             generate_cover,
+            lookup_word,
+            translate_selection,
             get_ai_status,
             set_api_config,
             set_image_config,

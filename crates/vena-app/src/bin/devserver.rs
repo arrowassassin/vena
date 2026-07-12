@@ -314,6 +314,10 @@ fn dispatch(
             );
             jv(path)
         }
+        "lookup_word" => jv(api.lookup_word(&s("term"), &s("lang"))?),
+        "translate_selection" => {
+            jv(api.translate_selection(i("bookId"), &s("text"), &s("targetLang"))?)
+        }
         "get_ai_status" => jv(api.get_ai_status()?),
         "set_api_config" => jv(api.set_api_config(&s("baseUrl"), &s("apiKey"), &s("model"))?),
         "set_image_config" => jv(api.set_image_config(&s("baseUrl"), &s("apiKey"), &s("model"))?),

@@ -1090,3 +1090,99 @@ fn unique_slug(store: &Store, slug: &str) -> Result<String> {
     }
     Ok(candidate)
 }
+
+// ============================ F5c: dictionary & translate ============================
+
+impl AppApi {
+    /// lookup_word(term, lang) — §F5c. Sources in priority order: user-imported
+    /// StarDict-style JSON packs in <data>/dict/*.json ({word: definition}),
+    /// then the AI fallback (stamped "ai") when a backend is ready.
+    pub fn lookup_word(&self, term: &str, _lang: &str) -> Result<serde_json::Value> {
+        let t = term.trim().to_lowercase();
+        if t.is_empty() {
+            return Err(VenaError::Other("empty term".into()));
+        }
+        // 1) user dictionary packs (bring-your-own, imported as JSON maps)
+        let dict_dir = self.data_dir.join("dict");
+        if let Ok(entries) = std::fs::read_dir(&dict_dir) {
+            for e in entries.flatten() {
+                if e.path().extension().and_then(|x| x.to_str()) == Some("json") {
+                    if let Ok(map) = serde_json::from_str::<serde_json::Value>(
+                        &std::fs::read_to_string(e.path()).unwrap_or_default(),
+                    ) {
+                        if let Some(def) = map.get(&t).and_then(|v| v.as_str()) {
+                            return Ok(serde_json::json!({"source":"stardict","entry":def}));
+                        }
+                    }
+                }
+            }
+        }
+        // 2) AI fallback — stamped "ai" (the ✦ AI badge in the design).
+        let store = self.store();
+        let backend = self.runtime_backend(&store)?;
+        drop(store);
+        let entry = backend.complete(
+            "You are a concise offline dictionary. Define the word in <=25 words. No preamble.",
+            &t,
+            &vena_core::inference::GenOptions {
+                max_tokens: 60,
+                temperature: 0.2,
+                json: false,
+            },
+        )?;
+        Ok(serde_json::json!({"source":"ai","entry":entry.trim()}))
+    }
+
+    /// translate_selection(bookId, text, targetLang) — §F5c. INVARIANTS: the
+    /// translation is an overlay (canon untouched by construction), and only text
+    /// at or before the reader's bookmark may be translated — enforced by checking
+    /// the selection actually occurs in an episode ≤ progress.
+    pub fn translate_selection(
+        &self,
+        book_id: i64,
+        text: &str,
+        target_lang: &str,
+    ) -> Result<String> {
+        let needle = text.trim();
+        if needle.len() < 2 {
+            return Err(VenaError::Other("selection too short".into()));
+        }
+        {
+            let store = self.store();
+            let progress = store.get_progress(book_id)?.0.max(1);
+            let book = store.get_book(book_id)?;
+            let mut found = false;
+            let probe: String = needle.chars().take(80).collect();
+            for seq in 1..=progress.min(book.episode_count) {
+                if store
+                    .get_episode(book_id, seq)?
+                    .content_html
+                    .contains(&probe)
+                {
+                    found = true;
+                    break;
+                }
+            }
+            if !found {
+                return Err(VenaError::Other(
+                    "only text at or before your bookmark can be translated".into(),
+                ));
+            }
+        }
+        let store = self.store();
+        let backend = self.runtime_backend(&store)?;
+        drop(store);
+        backend.complete(
+            &format!(
+                "Translate the passage into {target_lang}. Output ONLY the translation, \
+                 faithful in register and era."
+            ),
+            needle,
+            &vena_core::inference::GenOptions {
+                max_tokens: 800,
+                temperature: 0.3,
+                json: false,
+            },
+        )
+    }
+}
