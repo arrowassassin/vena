@@ -377,12 +377,17 @@ impl AppApi {
     }
 
     /// Forge (or re-forge) the ledger for an already-imported book — the path by
-    /// which a `raw` import becomes `sealed` once a backend exists. Streams
-    /// forge:progress and flips forge_state raw→forging→sealed honestly.
+    /// which a `raw` import becomes `sealed` once a backend exists.
+    ///
+    /// STREAMING: facts are inserted chapter-by-chapter, not in one batch at the end.
+    /// Because the store's gate is per-fact (`chapter_seq <= progress`), the companion
+    /// becomes usable for the early chapters the instant they land — a reader can chat
+    /// about chapter 1 while chapter 20 is still forging. `on_progress(pct, stage,
+    /// forged_through)` reports the highest chapter whose facts are now committed.
     pub fn forge_ledger(
         &self,
         book_id: i64,
-        on_progress: impl FnMut(u32, &str),
+        on_progress: impl FnMut(u32, &str, i64),
     ) -> Result<BookMeta> {
         // Any error past the "forging" mark rolls the state back to raw — a book must
         // never be stranded in "forging" (companion disabled) with no retry path.
@@ -398,11 +403,17 @@ impl AppApi {
     fn forge_ledger_inner(
         &self,
         book_id: i64,
-        mut on_progress: impl FnMut(u32, &str),
+        mut on_progress: impl FnMut(u32, &str, i64),
     ) -> Result<BookMeta> {
         let backend = self.backend_for_forge()?; // NoBackend when none — honest
-        self.store().set_forge_state(book_id, "forging")?;
-        on_progress(5, "parse");
+                                                 // Idempotent: a re-forge REPLACES rather than doubles the ledger.
+        {
+            let store = self.store();
+            store.clear_ledger(book_id)?;
+            store.set_forge_state(book_id, "forging")?;
+        }
+        on_progress(5, "parse", 0);
+
         // Rebuild chapters from stored canon (episode rows are the source of truth).
         let chapters = {
             let store = self.store();
@@ -418,22 +429,23 @@ impl AppApi {
             }
             out
         };
-        on_progress(15, "extract");
-        let ledger =
-            vena_forge::ledger::extract_with_model(backend.as_ref(), &chapters, |seq, total| {
-                on_progress(15 + (seq as u32 * 70 / total.max(1) as u32), "extract")
-            })
-            .map_err(|e| VenaError::Inference(e.to_string()))?;
-        on_progress(90, "seal");
-        // Insert ledger rows into the existing story. Idempotent: clear any prior
-        // ledger first so a re-forge REPLACES rather than DOUBLES facts/edges.
-        {
-            let store = self.store();
-            store.clear_ledger(book_id)?;
-            insert_ledger_rows(&store, book_id, &ledger)?;
-            store.set_forge_state(book_id, "sealed")?;
+
+        let total = chapters.len().max(1) as u32;
+        let mut known: Vec<String> = Vec::new();
+        for ch in &chapters {
+            // Extract one chapter, then commit it immediately so the gate exposes it.
+            let partial = vena_forge::ledger::extract_chapter(backend.as_ref(), ch, &mut known)
+                .map_err(|e| VenaError::Inference(e.to_string()))?;
+            {
+                let store = self.store();
+                insert_ledger_rows(&store, book_id, &partial)?;
+            }
+            let pct = 5 + (ch.seq as u32 * 90 / total);
+            on_progress(pct.min(99), "extract", ch.seq);
         }
-        on_progress(100, "done");
+
+        self.store().set_forge_state(book_id, "sealed")?;
+        on_progress(100, "done", chapters.len() as i64);
         self.store().get_book(book_id)
     }
 
@@ -499,6 +511,81 @@ impl AppApi {
         store.set_setting(K_CLOUD_MODEL, model)?;
         store.set_setting(K_CHAT_MODE, "cloud")?;
         Ok(())
+    }
+
+    /// Curated Cloud Relay providers so onboarding is one tap: pick a provider, paste
+    /// a key, done. The base URL + a sensible default model are pre-filled — the user
+    /// only supplies the secret. (OpenAI-compatible endpoints; free tiers noted.)
+    pub fn relay_presets(&self) -> serde_json::Value {
+        serde_json::json!([
+            {
+                "id": "openrouter", "name": "OpenRouter",
+                "base_url": "https://openrouter.ai/api/v1",
+                "default_model": "meta-llama/llama-3.3-70b-instruct:free",
+                "free_tier": true,
+                "key_url": "https://openrouter.ai/keys",
+                "note": "Free models available; one key, many providers."
+            },
+            {
+                "id": "groq", "name": "Groq",
+                "base_url": "https://api.groq.com/openai/v1",
+                "default_model": "llama-3.3-70b-versatile",
+                "free_tier": true,
+                "key_url": "https://console.groq.com/keys",
+                "note": "Very fast; generous free tier."
+            },
+            {
+                "id": "together", "name": "Together AI",
+                "base_url": "https://api.together.xyz/v1",
+                "default_model": "meta-llama/Llama-3.3-70B-Instruct-Turbo",
+                "free_tier": false,
+                "key_url": "https://api.together.ai/settings/api-keys",
+                "note": "Broad open-model catalog."
+            },
+            {
+                "id": "ollama", "name": "Ollama (this machine)",
+                "base_url": "http://localhost:11434/v1",
+                "default_model": "qwen3:8b",
+                "free_tier": true,
+                "key_url": "https://ollama.com/download",
+                "note": "Fully local via Ollama — no key, nothing leaves the device."
+            },
+            {
+                "id": "lmstudio", "name": "LM Studio (this machine)",
+                "base_url": "http://localhost:1234/v1",
+                "default_model": "local-model",
+                "free_tier": true,
+                "key_url": "https://lmstudio.ai",
+                "note": "Fully local via LM Studio — no key needed."
+            }
+        ])
+    }
+
+    /// One-tap relay setup: given a preset id and (optional) key, fill in the base
+    /// URL + default model, persist, and TEST it in a single round-trip. Returns the
+    /// relay test so the UI can confirm success without a second call. Localhost
+    /// presets (Ollama/LM Studio) need no key.
+    pub fn configure_relay(&self, provider: &str, api_key: &str, model: &str) -> Result<RelayTest> {
+        let presets = self.relay_presets();
+        let preset = presets
+            .as_array()
+            .and_then(|a| a.iter().find(|p| p["id"] == provider))
+            .ok_or_else(|| VenaError::Other(format!("unknown relay provider: {provider}")))?;
+        let base = preset["base_url"].as_str().unwrap_or_default();
+        let chosen_model = if model.trim().is_empty() {
+            preset["default_model"].as_str().unwrap_or_default()
+        } else {
+            model.trim()
+        };
+        // Localhost providers may omit the key; remote ones require it.
+        let is_local = base.contains("localhost") || base.contains("127.0.0.1");
+        if api_key.trim().is_empty() && !is_local {
+            return Err(VenaError::Other(
+                "this provider needs an API key (localhost providers don't)".into(),
+            ));
+        }
+        self.set_api_config(base, api_key.trim(), chosen_model)?;
+        self.test_relay()
     }
 
     pub fn set_image_config(&self, base_url: &str, api_key: &str, model: &str) -> Result<()> {

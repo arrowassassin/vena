@@ -239,62 +239,82 @@ pub fn extract_with_model(
     let total = chapters.len() as i64;
 
     for ch in chapters {
-        let body = ch
-            .paragraphs
-            .join("\n\n")
-            .chars()
-            .take(24_000) // keep within context; chapters split further if needed
-            .collect::<String>();
-        let user = format!(
-            "Chapter number: {}\nKnown characters so far: {}\n\nChapter text:\n{}",
-            ch.seq,
-            known.join(", "),
-            body
-        );
-        let opts = GenOptions {
-            json: true,
-            temperature: 0.2,
-            max_tokens: 2048,
-        };
-        let raw = backend
-            .complete(LEDGER_PROMPT, &user, &opts)
-            .map_err(|e| anyhow::anyhow!("forge inference failed at chapter {}: {e}", ch.seq))?;
-        let extract: ChapterExtract = parse_json_lax(&raw)
-            .with_context(|| format!("parsing ledger JSON for chapter {}", ch.seq))?;
-
-        for nc in extract.new_characters {
-            if !known.iter().any(|k| k.eq_ignore_ascii_case(&nc.name)) {
-                known.push(nc.name.clone());
-                ledger.characters.push(CharacterSpec {
-                    name: nc.name,
-                    aliases: nc.aliases,
-                    first_appearance_chapter: ch.seq,
-                    voice: nc.voice,
-                });
-            }
-        }
-        for f in extract.facts {
-            // Record only characters who actually learn the fact in THIS chapter
-            // (learned_this_chapter); others mentioned but not yet witnessing are
-            // excluded so per-character knowledge lags the reader correctly.
-            let known_by: Vec<(String, i64)> = f
-                .known_by
-                .iter()
-                .filter(|k| k.learned_this_chapter)
-                .map(|k| (k.character.clone(), ch.seq))
-                .collect();
-            ledger.facts.push(FactSpec {
-                chapter: ch.seq,
-                subject: f.subject,
-                kind: FactKind::parse(&f.kind),
-                text: f.text,
-                known_by,
-                spoiler_weight: f.spoiler_weight.clamp(0, 3),
-            });
-        }
+        let partial = extract_chapter(backend, ch, &mut known)?;
+        ledger.characters.extend(partial.characters);
+        ledger.entities.extend(partial.entities);
+        ledger.facts.extend(partial.facts);
+        ledger.edges.extend(partial.edges);
         on_progress(ch.seq, total);
     }
 
+    Ok(ledger)
+}
+
+/// Extract ONE chapter's ledger slice — the facts a reader learns in this chapter
+/// plus any first-appearing characters. `known` is the running roster (mutated so
+/// later chapters know prior characters). Returned as a single-chapter `Ledger` so
+/// the caller can INSERT INCREMENTALLY: the chapter-gated store makes those facts
+/// live for chat the instant they land, so a reader can chat about chapter 1 while
+/// chapter 20 is still forging (§6 — the gate is per-fact, not per-book).
+pub fn extract_chapter(
+    backend: &dyn Inference,
+    ch: &Chapter,
+    known: &mut Vec<String>,
+) -> Result<Ledger> {
+    let mut ledger = Ledger::default();
+    let body = ch
+        .paragraphs
+        .join("\n\n")
+        .chars()
+        .take(24_000)
+        .collect::<String>();
+    let user = format!(
+        "Chapter number: {}\nKnown characters so far: {}\n\nChapter text:\n{}",
+        ch.seq,
+        known.join(", "),
+        body
+    );
+    let opts = GenOptions {
+        json: true,
+        temperature: 0.2,
+        max_tokens: 2048,
+    };
+    let raw = backend
+        .complete(LEDGER_PROMPT, &user, &opts)
+        .map_err(|e| anyhow::anyhow!("forge inference failed at chapter {}: {e}", ch.seq))?;
+    let extract: ChapterExtract = parse_json_lax(&raw)
+        .with_context(|| format!("parsing ledger JSON for chapter {}", ch.seq))?;
+
+    for nc in extract.new_characters {
+        if !known.iter().any(|k| k.eq_ignore_ascii_case(&nc.name)) {
+            known.push(nc.name.clone());
+            ledger.characters.push(CharacterSpec {
+                name: nc.name,
+                aliases: nc.aliases,
+                first_appearance_chapter: ch.seq,
+                voice: nc.voice,
+            });
+        }
+    }
+    for f in extract.facts {
+        // Record only characters who actually learn the fact in THIS chapter
+        // (learned_this_chapter); others mentioned but not yet witnessing are
+        // excluded so per-character knowledge lags the reader correctly.
+        let known_by: Vec<(String, i64)> = f
+            .known_by
+            .iter()
+            .filter(|k| k.learned_this_chapter)
+            .map(|k| (k.character.clone(), ch.seq))
+            .collect();
+        ledger.facts.push(FactSpec {
+            chapter: ch.seq,
+            subject: f.subject,
+            kind: FactKind::parse(&f.kind),
+            text: f.text,
+            known_by,
+            spoiler_weight: f.spoiler_weight.clamp(0, 3),
+        });
+    }
     Ok(ledger)
 }
 

@@ -302,10 +302,10 @@ async fn forge_ledger(
     let api = api.inner().clone();
     let handle = app.clone();
     tauri::async_runtime::spawn_blocking(move || {
-        let meta = api.forge_ledger(book_id, |pct, stage| {
+        let meta = api.forge_ledger(book_id, |pct, stage, forged_through| {
             let _ = handle.emit(
                 "forge:progress",
-                serde_json::json!({ "bookId": book_id, "pct": pct, "stage": stage }),
+                serde_json::json!({ "bookId": book_id, "pct": pct, "stage": stage, "forgedThrough": forged_through }),
             );
         })?;
         let _ = handle.emit(
@@ -427,6 +427,24 @@ fn set_chat_mode(api: State<'_, Api>, mode: String) -> Result<(), VenaError> {
 }
 
 #[tauri::command]
+fn relay_presets(api: State<'_, Api>) -> Result<serde_json::Value, VenaError> {
+    Ok(api.relay_presets())
+}
+
+#[tauri::command]
+async fn configure_relay(
+    api: State<'_, Api>,
+    provider: String,
+    api_key: String,
+    model: String,
+) -> Result<RelayTest, VenaError> {
+    let api = api.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || api.configure_relay(&provider, &api_key, &model))
+        .await
+        .map_err(|e| VenaError::Other(e.to_string()))?
+}
+
+#[tauri::command]
 async fn test_relay(api: State<'_, Api>) -> Result<RelayTest, VenaError> {
     let api = api.inner().clone();
     tauri::async_runtime::spawn_blocking(move || api.test_relay())
@@ -522,6 +540,8 @@ fn main() {
             set_api_config,
             set_image_config,
             set_chat_mode,
+            relay_presets,
+            configure_relay,
             test_relay,
             list_relay_models,
             download_local_model,

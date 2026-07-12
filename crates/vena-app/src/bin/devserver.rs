@@ -265,11 +265,11 @@ fn dispatch(
         "forge_ledger" => {
             let ev = events.clone();
             let book_id = i("bookId");
-            let meta = api.forge_ledger(book_id, |pct, stage| {
+            let meta = api.forge_ledger(book_id, |pct, stage, forged_through| {
                 push(
                     &ev,
                     "forge:progress",
-                    serde_json::json!({ "bookId": book_id, "pct": pct, "stage": stage }),
+                    serde_json::json!({ "bookId": book_id, "pct": pct, "stage": stage, "forgedThrough": forged_through }),
                 );
             })?;
             push(
@@ -322,6 +322,8 @@ fn dispatch(
         "set_api_config" => jv(api.set_api_config(&s("baseUrl"), &s("apiKey"), &s("model"))?),
         "set_image_config" => jv(api.set_image_config(&s("baseUrl"), &s("apiKey"), &s("model"))?),
         "set_chat_mode" => jv(api.set_chat_mode(&s("mode"))?),
+        "relay_presets" => Ok(api.relay_presets()),
+        "configure_relay" => jv(api.configure_relay(&s("provider"), &s("apiKey"), &s("model"))?),
         "test_relay" => jv(api.test_relay()?),
         "list_relay_models" => jv(api.list_relay_models()?),
         "download_local_model" => {

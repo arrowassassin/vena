@@ -111,3 +111,24 @@ fn ai_status_defaults_to_cloud_steer() {
     assert!(!status.ready); // nothing configured → honest "not ready", no mock
     assert_eq!(status.mode, "none");
 }
+
+#[test]
+fn relay_presets_and_one_tap_setup() {
+    let api = AppApi::in_memory().unwrap();
+    let presets = api.relay_presets();
+    let arr = presets.as_array().unwrap();
+    assert!(arr.iter().any(|p| p["id"] == "openrouter"));
+    assert!(arr.iter().any(|p| p["id"] == "ollama"));
+
+    // Remote provider without a key is refused (honest, no silent misconfig).
+    assert!(api.configure_relay("openrouter", "", "").is_err());
+    // Unknown provider is refused.
+    assert!(api.configure_relay("nope", "sk-x", "").is_err());
+    // A localhost provider needs no key: it fills base+default model and persists,
+    // then attempts a (here unreachable) test — config is written regardless.
+    let _ = api.configure_relay("ollama", "", "");
+    let s = api.get_settings().unwrap();
+    assert_eq!(s["cloud_base_url"], "http://localhost:11434/v1");
+    assert_eq!(s["cloud_model"], "qwen3:8b");
+    assert_eq!(s["default_chat_mode"], "cloud");
+}
