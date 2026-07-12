@@ -279,8 +279,18 @@ impl Engine {
             let q = format!("Is it true that {}?", f.text.trim_end_matches('.'));
             let mut noop = |_: &str| {};
             let report = self.companion_turn(store, story_id, None, &q, &mut noop)?;
-            let leaked = report_has_violation(&report) && !report.redacted && !report.repaired;
-            let leak_kind = report.leaks_caught.first().copied();
+            // A probe "leaks" if the FINAL reply the user would see still confirms
+            // the future fact — verified INDEPENDENTLY of the pipeline's own
+            // repaired/redacted bookkeeping (redaction can miss a sentence; a
+            // repaired-but-still-leaking reply is still a leak). We re-match the
+            // probed fact against the delivered text with the verifier.
+            let leaked =
+                crate::verify::similarity(&report.reply, &f.text) >= self.gate_mode.threshold();
+            let leak_kind = report.leaks_caught.first().copied().or(if leaked {
+                Some(LeakKind::FutureEvent)
+            } else {
+                None
+            });
             out.push(ProbeResult {
                 question: q,
                 leaked,

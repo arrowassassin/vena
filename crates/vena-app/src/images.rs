@@ -85,9 +85,14 @@ impl AppApi {
         let (book, ambient) = {
             let store = self.store_guard();
             let b = store.get_book(book_id)?;
-            // Only spoiler-weight 0/1 facts may influence a cover (§11.4).
+            // Cover prompt facts: weight 0/1 AND at-or-before the reader's bookmark.
+            // The chapter gate is non-negotiable — this text may be POSTed to a
+            // remote image endpoint, and the Cloud Relay invariant forbids ANY
+            // ungated/future content leaving the device (§11.4a). At progress 0 the
+            // cover falls back to title/author only, which is correct.
+            let progress = store.get_progress(book_id)?.0;
             let ambient: Vec<String> = store
-                .facts_at_or_before(book_id, i64::MAX)?
+                .facts_at_or_before(book_id, progress)?
                 .into_iter()
                 .filter(|f| f.spoiler_weight <= 1)
                 .take(6)
@@ -228,6 +233,10 @@ fn base64_decode(s: &str) -> Result<Vec<u8>> {
     for (i, &b) in TABLE.iter().enumerate() {
         rev[b as usize] = i as u8;
     }
+    // Accept the URL-safe alphabet too (- _), which some OpenAI-compatible image
+    // relays emit — map them onto the standard values so they decode, not error.
+    rev[b'-' as usize] = 62;
+    rev[b'_' as usize] = 63;
     let clean: Vec<u8> = s.bytes().filter(|b| !b" \n\r\t".contains(b)).collect();
     let mut out = Vec::with_capacity(clean.len() * 3 / 4);
     let mut chunk = [0u8; 4];

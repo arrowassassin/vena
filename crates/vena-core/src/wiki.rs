@@ -195,6 +195,15 @@ pub fn get_wiki_page(
     {
         let cid: i64 = cid.parse().unwrap_or(-1);
         let ch = store.get_character(story_id, cid)?;
+        // Synced mode seals characters the reader hasn't met yet — the same rule the
+        // index applies (silhouettes). Fetching the page directly must not bypass it:
+        // an unmet character's name and pre-appearance facts stay hidden until Full
+        // mode (which required consent above).
+        if mode != WikiMode::Full && ch.first_appearance_chapter > progress {
+            return Err(VenaError::NotFound(format!(
+                "wiki entity {entity_id} is still sealed — keep reading to meet them"
+            )));
+        }
         (
             ch.name.clone(),
             all_facts

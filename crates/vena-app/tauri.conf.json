@@ -7,6 +7,7 @@
     "frontendDist": "../../ui-dc"
   },
   "app": {
+    "withGlobalTauri": true,
     "windows": [
       {
         "title": "VENA \u2014 the spoiler-safe reading companion",

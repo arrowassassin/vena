@@ -70,10 +70,22 @@ pub fn import_vena(profile: &Store, vena_path: &Path) -> Result<i64> {
                 entry.read_to_end(&mut buf)?;
                 std::fs::write(&db_path, &buf)?;
             } else if name.starts_with("cover_") {
+                // Zip-slip guard: a malicious package could name an entry
+                // "cover_../../etc" and escape the assets dir. Use ONLY the final
+                // path component, and reject anything with separators / traversal.
+                let leaf = std::path::Path::new(&name)
+                    .file_name()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("");
+                if leaf != name || leaf.is_empty() || leaf.contains("..") {
+                    return Err(VenaError::InvalidPackage(format!(
+                        "unsafe asset path in package: {name}"
+                    )));
+                }
                 let mut buf = Vec::new();
                 entry.read_to_end(&mut buf)?;
                 let assets = profile_asset_dir()?;
-                let out = assets.join(&name);
+                let out = assets.join(leaf);
                 std::fs::write(&out, &buf)?;
                 cover_asset = Some(out.to_string_lossy().to_string());
             }

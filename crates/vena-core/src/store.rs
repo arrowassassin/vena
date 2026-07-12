@@ -182,6 +182,27 @@ impl Store {
         Ok(())
     }
 
+    /// Set forge_state (raw|forging|sealed) with a single meta read-modify-write —
+    /// the one place that field is mutated, so state transitions can't race across
+    /// unrelated meta writers via divergent copies.
+    pub fn set_forge_state(&self, id: i64, state: &str) -> Result<()> {
+        let mut meta = self.book_meta_value(id)?;
+        meta["forge_state"] = serde_json::json!(state);
+        self.set_book_meta(id, &meta.to_string())
+    }
+
+    /// Delete a story's ledger (facts + derived edges + entities) so a re-forge
+    /// rebuilds from scratch instead of doubling every fact. Canon is untouched.
+    pub fn clear_ledger(&self, id: i64) -> Result<()> {
+        self.conn
+            .execute("DELETE FROM edge WHERE story_id=?1", params![id])?;
+        self.conn
+            .execute("DELETE FROM entity WHERE story_id=?1", params![id])?;
+        self.conn
+            .execute("DELETE FROM fact WHERE story_id=?1", params![id])?;
+        Ok(())
+    }
+
     /// Set the cover asset path (covers are generated/replaced; canon is untouched).
     pub fn conn_execute_set_cover(&self, id: i64, cover: &str) -> Result<()> {
         self.conn
@@ -554,23 +575,42 @@ impl Store {
         Ok(self.conn.last_insert_rowid())
     }
 
+    /// Whether a conversation is currently archived (re-sealed). Used by the re-seal
+    /// filter and its regression test.
+    pub fn is_conversation_archived(&self, conversation_id: i64) -> Result<bool> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT archived FROM conversation WHERE id=?1",
+                params![conversation_id],
+                |r| r.get::<_, i64>(0),
+            )
+            .optional()?
+            .unwrap_or(0)
+            != 0)
+    }
+
     /// Re-seal on re-read (§11.4a): archive conversations/messages stamped after a
     /// rewind point (never delete). Restored when progress passes them again.
     pub fn reseal_after(&self, story_id: i64, progress: i64) -> Result<()> {
-        // Archive conversations whose messages are all beyond the new position.
+        // Archive any conversation that CONTAINS a message stamped after the rewind
+        // point — MAX, not MIN. A conversation spanning ch2→ch12 rewound to ch3 must
+        // be sealed (its ch12 messages discuss future reveals); using MIN would leave
+        // it active because one early message predates the rewind. Whole-conversation
+        // archive is safe: it's restored intact once progress passes it again.
         self.conn.execute(
             "UPDATE conversation SET archived=1
              WHERE story_id=?1 AND id IN (
                SELECT conversation_id FROM message
-               GROUP BY conversation_id HAVING MIN(pinned_progress) > ?2)",
+               GROUP BY conversation_id HAVING MAX(pinned_progress) > ?2)",
             params![story_id, progress],
         )?;
-        // Restore any that are back in range.
+        // Restore conversations now fully at-or-before the position.
         self.conn.execute(
             "UPDATE conversation SET archived=0
              WHERE story_id=?1 AND id IN (
                SELECT conversation_id FROM message
-               GROUP BY conversation_id HAVING MIN(pinned_progress) <= ?2)",
+               GROUP BY conversation_id HAVING MAX(pinned_progress) <= ?2)",
             params![story_id, progress],
         )?;
         Ok(())

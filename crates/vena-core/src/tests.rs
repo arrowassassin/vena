@@ -347,6 +347,41 @@ fn wiki_synced_hides_future() {
 }
 
 #[test]
+fn wiki_synced_page_seals_unmet_character() {
+    // Regression: get_wiki_index silhouettes unmet characters, but a DIRECT page
+    // fetch must not bypass that — Van Helsing (first appears ch9) at progress 6.
+    let (s, sid, _) = fixture();
+    s.set_progress(sid, 6, 0).unwrap();
+    let vh = wiki::get_wiki_page(&s, sid, "char:4", WikiMode::Synced);
+    assert!(
+        vh.is_err(),
+        "synced wiki page must seal an unmet character's name, not return it"
+    );
+    // A met character (Lucy, ch5) is still reachable at ch6.
+    assert!(wiki::get_wiki_page(&s, sid, "char:3", WikiMode::Synced).is_ok());
+}
+
+#[test]
+fn reseal_seals_conversations_spanning_the_rewind() {
+    // Regression: a conversation begun early but continued past the rewind point
+    // must be archived (MAX pinned_progress > new position), not left active
+    // because one early message predates the rewind (MIN would miss it).
+    let (s, sid, _) = fixture();
+    let conv = s.create_conversation(sid, None).unwrap();
+    s.add_message(conv, "user", "at ch2", 2, "{}").unwrap();
+    s.add_message(conv, "assistant", "about ch12 reveal", 12, "{}")
+        .unwrap();
+    s.reseal_after(sid, 3).unwrap();
+    assert!(
+        s.is_conversation_archived(conv).unwrap(),
+        "a ch2→ch12 conversation must be sealed on rewind to ch3"
+    );
+    // Passing the position again restores it.
+    s.reseal_after(sid, 12).unwrap();
+    assert!(!s.is_conversation_archived(conv).unwrap());
+}
+
+#[test]
 fn burn_book_removes_everything() {
     let (s, sid, _) = fixture();
     s.add_theory(sid, "a theory", 1).unwrap();

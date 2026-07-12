@@ -235,7 +235,30 @@ impl AppApi {
 
     /// "Burn this book's data" (§11.4a): per-book hard delete.
     pub fn delete_book(&self, id: i64) -> Result<()> {
-        self.store().burn_book(id)
+        // "Deleting a book burns its ledger with it" — a true hard delete must also
+        // remove the on-disk artifacts, not just DB rows: the {slug}.vena archive
+        // written at import, and every cached cover/portrait asset. Otherwise the
+        // full canon + ledger + art stay recoverable on disk after a "burn".
+        let slug = self.store().get_book(id).ok().map(|b| b.slug);
+        self.store().burn_book(id)?;
+        if let Some(slug) = slug {
+            let _ = std::fs::remove_file(self.data_dir.join(format!("{slug}.vena")));
+        }
+        if let Ok(dir) = self.assets_dir() {
+            if let Ok(entries) = std::fs::read_dir(&dir) {
+                for e in entries.flatten() {
+                    let name = e.file_name();
+                    let name = name.to_string_lossy();
+                    // Assets are keyed by book id: cover-{id}.* and portrait-{id}-*.
+                    if name.starts_with(&format!("cover-{id}."))
+                        || name.starts_with(&format!("portrait-{id}-"))
+                    {
+                        let _ = std::fs::remove_file(e.path());
+                    }
+                }
+            }
+        }
+        Ok(())
     }
 
     // ============================ Reading ============================
@@ -338,7 +361,7 @@ impl AppApi {
         let entry = serde_json::json!({
             "book_id": book_id,
             "pinned_progress": progress,
-            "reason": reason,      // future | character | tone | other
+            "reason": reason,      // leak taxonomy: future_event | unmet_character | tone_implies_ending | other
             "excerpt": excerpt,
             "comment": comment,
             "reported_at": chrono_now(),
@@ -359,16 +382,26 @@ impl AppApi {
     pub fn forge_ledger(
         &self,
         book_id: i64,
+        on_progress: impl FnMut(u32, &str),
+    ) -> Result<BookMeta> {
+        // Any error past the "forging" mark rolls the state back to raw — a book must
+        // never be stranded in "forging" (companion disabled) with no retry path.
+        match self.forge_ledger_inner(book_id, on_progress) {
+            Ok(meta) => Ok(meta),
+            Err(e) => {
+                let _ = self.store().set_forge_state(book_id, "raw");
+                Err(e)
+            }
+        }
+    }
+
+    fn forge_ledger_inner(
+        &self,
+        book_id: i64,
         mut on_progress: impl FnMut(u32, &str),
     ) -> Result<BookMeta> {
         let backend = self.backend_for_forge()?; // NoBackend when none — honest
-                                                 // Mark forging.
-        {
-            let store = self.store();
-            let mut meta = store.book_meta_value(book_id)?;
-            meta["forge_state"] = serde_json::json!("forging");
-            store.set_book_meta(book_id, &meta.to_string())?;
-        }
+        self.store().set_forge_state(book_id, "forging")?;
         on_progress(5, "parse");
         // Rebuild chapters from stored canon (episode rows are the source of truth).
         let chapters = {
@@ -390,26 +423,15 @@ impl AppApi {
             vena_forge::ledger::extract_with_model(backend.as_ref(), &chapters, |seq, total| {
                 on_progress(15 + (seq as u32 * 70 / total.max(1) as u32), "extract")
             })
-            .map_err(|e| {
-                // Roll the state back to raw on failure — never claim a seal we don't have.
-                if let Ok(store) =
-                    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.store()))
-                {
-                    if let Ok(mut meta) = store.book_meta_value(book_id) {
-                        meta["forge_state"] = serde_json::json!("raw");
-                        let _ = store.set_book_meta(book_id, &meta.to_string());
-                    }
-                }
-                VenaError::Inference(e.to_string())
-            })?;
+            .map_err(|e| VenaError::Inference(e.to_string()))?;
         on_progress(90, "seal");
-        // Insert ledger rows into the existing story.
+        // Insert ledger rows into the existing story. Idempotent: clear any prior
+        // ledger first so a re-forge REPLACES rather than DOUBLES facts/edges.
         {
             let store = self.store();
+            store.clear_ledger(book_id)?;
             insert_ledger_rows(&store, book_id, &ledger)?;
-            let mut meta = store.book_meta_value(book_id)?;
-            meta["forge_state"] = serde_json::json!("sealed");
-            store.set_book_meta(book_id, &meta.to_string())?;
+            store.set_forge_state(book_id, "sealed")?;
         }
         on_progress(100, "done");
         self.store().get_book(book_id)
@@ -1149,7 +1171,9 @@ impl AppApi {
         }
         {
             let store = self.store();
-            let progress = store.get_progress(book_id)?.0.max(1);
+            // No .max(1): at progress 0 nothing has been read, so nothing may be
+            // translated — the ≤-bookmark invariant holds at the boundary too.
+            let progress = store.get_progress(book_id)?.0;
             let book = store.get_book(book_id)?;
             let mut found = false;
             let probe: String = needle.chars().take(80).collect();

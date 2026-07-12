@@ -111,14 +111,14 @@ async fn companion_turn(
     book_id: i64,
     character_id: Option<i64>,
     message: String,
+    turn_id: Option<i64>,
 ) -> Result<TurnReport, VenaError> {
     let api = api.inner().clone();
     let handle = app.clone();
     tauri::async_runtime::spawn_blocking(move || {
-        let turn_id = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_millis() as i64)
-            .unwrap_or(0);
+        // Echo the UI-supplied turnId so companion:stage events correlate with the
+        // caller's turn (the UI drops events whose turnId != its own counter).
+        let turn_id = turn_id.unwrap_or(0);
         let report = api.companion_turn(book_id, character_id, &message, &mut |stage| {
             let _ = handle.emit(
                 "companion:stage",
@@ -451,8 +451,12 @@ async fn download_local_model(
     let api = api.inner().clone();
     let handle = app.clone();
     tauri::async_runtime::spawn_blocking(move || {
+        let tier_name = tier.clone();
         api.download_local_model(&tier, |pct| {
-            let _ = handle.emit("model:progress", serde_json::json!({ "pct": pct }));
+            let _ = handle.emit(
+                "model:progress",
+                serde_json::json!({ "tier": tier_name, "pct": pct }),
+            );
         })
     })
     .await
