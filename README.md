@@ -136,6 +136,7 @@ The per-segment dual-tester audit trail is in [VERIFICATION.md](VERIFICATION.md)
 
 ## License
 
-**AGPL-3.0-or-later** — see [LICENSE](LICENSE). Vena is local-first free software; the
-AGPL keeps every fork's improvements — including hosted ones — open. Book content in
-`data/` is public domain (Project Gutenberg).
+**Apache-2.0** — see [LICENSE](LICENSE). Permissive (app-store friendly, free to fork
+and embed — this covers the `.vena` package format too) with an explicit patent grant
+protecting contributors and users. Book content in `data/` is public domain (Project
+Gutenberg).

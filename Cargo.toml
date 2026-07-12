@@ -9,7 +9,7 @@ members = ["crates/vena-core", "crates/vena-forge", "crates/vena-eval", "crates/
 [workspace.package]
 version = "0.1.0"
 edition = "2021"
-license = "AGPL-3.0-or-later"
+license = "Apache-2.0"
 authors = ["Vena maintainers"]
 
 [workspace.dependencies]
