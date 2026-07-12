@@ -244,17 +244,23 @@ pub fn ao3_epub_url(work_url: &str) -> Result<String> {
 }
 
 fn parse_opds(xml: &str) -> Vec<(String, String, Option<String>, Option<String>)> {
-    let entry_re = regex::Regex::new(r"(?s)<entry>(.*?)</entry>").unwrap();
+    // Regexes compiled ONCE (a large OPDS feed has ~1000 entries; compiling per
+    // entry was orders of magnitude costlier than the matches themselves).
+    use std::sync::OnceLock;
+    static ENTRY_RE: OnceLock<regex::Regex> = OnceLock::new();
+    static ACQUIRE_RE: OnceLock<regex::Regex> = OnceLock::new();
+    let entry_re = ENTRY_RE.get_or_init(|| regex::Regex::new(r"(?s)<entry>(.*?)</entry>").unwrap());
+    let acquire_re = ACQUIRE_RE.get_or_init(|| {
+        regex::Regex::new(r#"<link[^>]*rel="[^"]*acquisition[^"]*"[^>]*href="([^"]+)"#).unwrap()
+    });
+
     let mut out = Vec::new();
     for c in entry_re.captures_iter(xml) {
         let e = &c[1];
         let title = tag(e, "title").unwrap_or_default();
         let author = tag(e, "name");
         let id = tag(e, "id").unwrap_or_else(|| title.clone());
-        let acquire =
-            regex::Regex::new(r#"<link[^>]*rel="[^"]*acquisition[^"]*"[^>]*href="([^"]+)"#)
-                .ok()
-                .and_then(|re| re.captures(e).map(|m| m[1].to_string()));
+        let acquire = acquire_re.captures(e).map(|m| m[1].to_string());
         if !title.is_empty() {
             out.push((format!("opds:{id}"), title, author, acquire));
         }
@@ -263,9 +269,21 @@ fn parse_opds(xml: &str) -> Vec<(String, String, Option<String>, Option<String>)
 }
 
 fn tag(xml: &str, name: &str) -> Option<String> {
-    regex::Regex::new(&format!(r"(?s)<{name}[^>]*>(.*?)</{name}>"))
-        .ok()?
-        .captures(xml)
+    // Cache one compiled regex per tag name across calls (title/name/id repeat for
+    // every OPDS entry).
+    use std::collections::HashMap;
+    use std::sync::{Mutex, OnceLock};
+    static CACHE: OnceLock<Mutex<HashMap<String, regex::Regex>>> = OnceLock::new();
+    let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    let re = {
+        let mut map = cache.lock().unwrap();
+        map.entry(name.to_string())
+            .or_insert_with(|| {
+                regex::Regex::new(&format!(r"(?s)<{name}[^>]*>(.*?)</{name}>")).unwrap()
+            })
+            .clone()
+    };
+    re.captures(xml)
         .map(|c| c[1].trim().to_string())
         .filter(|s| !s.is_empty())
 }
