@@ -12,10 +12,12 @@
 pub mod engine;
 pub mod error;
 pub mod graph;
+pub mod hash;
 pub mod inference;
 pub mod model;
 pub mod pkg;
 pub mod store;
+pub mod util;
 pub mod verify;
 pub mod wiki;
 

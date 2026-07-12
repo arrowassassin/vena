@@ -7,7 +7,6 @@ use crate::error::{Result, VenaError};
 use crate::model::*;
 use crate::store::Store;
 use rusqlite::{params, Connection, OptionalExtension};
-use sha2::{Digest, Sha256};
 use std::io::{Read, Write};
 use std::path::Path;
 
@@ -40,13 +39,7 @@ pub fn write_vena(
 
     zip.finish()?;
 
-    let mut hasher = Sha256::new();
-    hasher.update(std::fs::read(out_vena_path)?);
-    Ok(hex(&hasher.finalize()))
-}
-
-fn hex(bytes: &[u8]) -> String {
-    bytes.iter().map(|b| format!("{b:02x}")).collect()
+    Ok(crate::hash::sha256_hex(&std::fs::read(out_vena_path)?))
 }
 
 /// Import a `.vena` into a profile store under a fresh story_id. Every FK is
@@ -123,7 +116,7 @@ pub fn import_vena(profile: &Store, vena_path: &Path) -> Result<i64> {
         },
     )?;
     // Guarantee a unique slug in the profile.
-    let unique_slug = unique_slug(profile, &slug)?;
+    let unique_slug = crate::util::unique_slug(profile, &slug)?;
     let cover_final = cover_asset.or(cover);
     let new_sid = profile.insert_story(
         &unique_slug,
@@ -321,25 +314,6 @@ fn validate_schema(pkg: &Connection) -> Result<()> {
         )));
     }
     Ok(())
-}
-
-fn unique_slug(profile: &Store, slug: &str) -> Result<String> {
-    let mut candidate = slug.to_string();
-    let mut n = 1;
-    while profile
-        .conn()
-        .query_row(
-            "SELECT 1 FROM story WHERE slug=?1",
-            params![candidate],
-            |r| r.get::<_, i64>(0),
-        )
-        .optional()?
-        .is_some()
-    {
-        n += 1;
-        candidate = format!("{slug}-{n}");
-    }
-    Ok(candidate)
 }
 
 fn profile_asset_dir() -> Result<std::path::PathBuf> {

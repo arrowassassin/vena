@@ -281,8 +281,7 @@ fn content_sha(store: &Store, sid: i64) -> Result<String> {
     for t in fact_texts {
         hasher.update(t.as_bytes());
     }
-    let full = hasher.finalize();
-    Ok(full.iter().map(|b| format!("{b:02x}")).collect::<String>())
+    Ok(vena_core::hash::hex(&hasher.finalize()))
 }
 
 fn norm(s: &str) -> String {

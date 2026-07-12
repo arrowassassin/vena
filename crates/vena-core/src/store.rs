@@ -60,31 +60,46 @@ impl Store {
         Ok(id)
     }
 
+    /// All books in one pass. Single statement with correlated COUNT/scalar
+    /// subqueries — no per-book fan-out (the old 1+4N shape was visible latency on
+    /// a large shelf while holding the profile lock).
     pub fn list_books(&self) -> Result<Vec<BookMeta>> {
-        let ids: Vec<i64> = self
-            .conn
-            .prepare("SELECT id FROM story ORDER BY id")?
-            .query_map([], |r| r.get(0))?
-            .collect::<std::result::Result<_, _>>()?;
-        ids.into_iter().map(|id| self.get_book(id)).collect()
+        let mut stmt = self.conn.prepare(
+            "SELECT s.id, s.slug, s.title, s.author, s.license, s.source, s.cover, s.meta_json,
+                    (SELECT COUNT(*) FROM episode e WHERE e.story_id = s.id),
+                    (SELECT COUNT(*) FROM fact f WHERE f.story_id = s.id),
+                    COALESCE((SELECT p.episode_seq FROM progress p WHERE p.story_id = s.id), 0)
+             FROM story s ORDER BY s.id",
+        )?;
+        let rows = stmt.query_map([], |r| {
+            Ok(Self::row_to_book_meta(
+                r.get(0)?,
+                r.get(1)?,
+                r.get(2)?,
+                r.get(3)?,
+                r.get(4)?,
+                r.get(5)?,
+                r.get(6)?,
+                r.get(7)?,
+                r.get(8)?,
+                r.get(9)?,
+                r.get(10)?,
+            ))
+        })?;
+        Ok(rows.collect::<std::result::Result<_, _>>()?)
     }
 
     pub fn get_book(&self, id: i64) -> Result<BookMeta> {
-        let (slug, title, author, license, source, cover, meta_json): (
-            String,
-            String,
-            Option<String>,
-            String,
-            Option<String>,
-            Option<String>,
-            String,
-        ) = self
-            .conn
+        self.conn
             .query_row(
-                "SELECT slug,title,author,license,source,cover,meta_json FROM story WHERE id=?1",
+                "SELECT s.id, s.slug, s.title, s.author, s.license, s.source, s.cover, s.meta_json,
+                        (SELECT COUNT(*) FROM episode e WHERE e.story_id = s.id),
+                        (SELECT COUNT(*) FROM fact f WHERE f.story_id = s.id),
+                        COALESCE((SELECT p.episode_seq FROM progress p WHERE p.story_id = s.id), 0)
+                 FROM story s WHERE s.id = ?1",
                 params![id],
                 |r| {
-                    Ok((
+                    Ok(Self::row_to_book_meta(
                         r.get(0)?,
                         r.get(1)?,
                         r.get(2)?,
@@ -92,46 +107,42 @@ impl Store {
                         r.get(4)?,
                         r.get(5)?,
                         r.get(6)?,
+                        r.get(7)?,
+                        r.get(8)?,
+                        r.get(9)?,
+                        r.get(10)?,
                     ))
                 },
             )
             .optional()?
-            .ok_or_else(|| VenaError::NotFound(format!("story {id}")))?;
+            .ok_or_else(|| VenaError::NotFound(format!("story {id}")))
+    }
 
+    /// Build a `BookMeta` from the shared column set — the one place the meta_json
+    /// fields (forge_state / coverage / sha / profile) are decoded, so list_books
+    /// and get_book can't drift.
+    #[allow(clippy::too_many_arguments)]
+    fn row_to_book_meta(
+        id: i64,
+        slug: String,
+        title: String,
+        author: Option<String>,
+        license: String,
+        source: Option<String>,
+        cover: Option<String>,
+        meta_json: String,
+        episode_count: i64,
+        fact_count: i64,
+        progress_episode: i64,
+    ) -> BookMeta {
         let meta: serde_json::Value = serde_json::from_str(&meta_json).unwrap_or_default();
-        let episode_count: i64 = self.conn.query_row(
-            "SELECT COUNT(*) FROM episode WHERE story_id=?1",
-            params![id],
-            |r| r.get(0),
-        )?;
-        let fact_count: i64 = self.conn.query_row(
-            "SELECT COUNT(*) FROM fact WHERE story_id=?1",
-            params![id],
-            |r| r.get(0),
-        )?;
-        let progress_episode: i64 = self
-            .conn
-            .query_row(
-                "SELECT episode_seq FROM progress WHERE story_id=?1",
-                params![id],
-                |r| r.get(0),
-            )
-            .optional()?
-            .unwrap_or(0);
-
         let forge_state = match meta.get("forge_state").and_then(|v| v.as_str()) {
             Some("forging") => ForgeState::Forging,
             Some("sealed") => ForgeState::Sealed,
-            _ => {
-                if fact_count > 0 {
-                    ForgeState::Sealed
-                } else {
-                    ForgeState::Raw
-                }
-            }
+            _ if fact_count > 0 => ForgeState::Sealed,
+            _ => ForgeState::Raw,
         };
-
-        Ok(BookMeta {
+        BookMeta {
             id,
             slug,
             title,
@@ -156,7 +167,7 @@ impl Store {
                 .unwrap_or("prose")
                 .to_string(),
             forge_state,
-        })
+        }
     }
 
     /// "Burn this book's data" (§11.4a): hard-delete everything for one story.

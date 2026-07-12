@@ -12,12 +12,18 @@ use std::io::Write;
 use std::path::Path;
 use vena_core::{Result, VenaError};
 
-fn client() -> reqwest::blocking::Client {
-    reqwest::blocking::Client::builder()
-        .user_agent("vena/0.1 (+https://github.com/arrowassassin/vena)")
-        .timeout(std::time::Duration::from_secs(60))
-        .build()
-        .expect("http client")
+/// One shared client for the whole process — reuses the connection pool / keep-alive
+/// across every store search, catalog fetch, and model download instead of paying a
+/// fresh TLS handshake per request.
+fn client() -> &'static reqwest::blocking::Client {
+    static CLIENT: std::sync::OnceLock<reqwest::blocking::Client> = std::sync::OnceLock::new();
+    CLIENT.get_or_init(|| {
+        reqwest::blocking::Client::builder()
+            .user_agent("vena/0.1 (+https://github.com/arrowassassin/vena)")
+            .timeout(std::time::Duration::from_secs(60))
+            .build()
+            .expect("http client")
+    })
 }
 
 /// RESUMABLE streaming download. Partial data lands in `<dest>.part`; re-invocation
@@ -83,7 +89,7 @@ pub fn download_file_verified(
 
     // Integrity gate: verify BEFORE renaming into place / marking ready.
     if let Some(expected) = expected_sha256 {
-        let actual = sha256_file(&part)?;
+        let actual = vena_core::hash::sha256_hex_reader(std::fs::File::open(&part)?)?;
         if !actual.eq_ignore_ascii_case(expected) {
             let _ = std::fs::remove_file(&part);
             return Err(VenaError::Other(format!(
@@ -94,25 +100,6 @@ pub fn download_file_verified(
     std::fs::rename(&part, dest)?;
     on_progress(100);
     Ok(())
-}
-
-fn sha256_file(path: &Path) -> Result<String> {
-    use sha2::{Digest, Sha256};
-    let mut hasher = Sha256::new();
-    let mut f = std::fs::File::open(path)?;
-    let mut buf = [0u8; 128 * 1024];
-    loop {
-        let n = std::io::Read::read(&mut f, &mut buf)?;
-        if n == 0 {
-            break;
-        }
-        hasher.update(&buf[..n]);
-    }
-    Ok(hasher
-        .finalize()
-        .iter()
-        .map(|b| format!("{b:02x}"))
-        .collect())
 }
 
 /// Download a tier's GGUF from Hugging Face with REAL SHA-256 verification: the

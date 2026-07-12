@@ -122,7 +122,11 @@ fn main() -> Result<()> {
                     led.facts.len(),
                     led.edges.len()
                 );
-                (slug.unwrap_or_else(|| slugify(&book.title)), license, led)
+                (
+                    slug.unwrap_or_else(|| vena_core::util::slugify(&book.title)),
+                    license,
+                    led,
+                )
             };
 
             // Build the package db in a temp dir, write cover if present.
@@ -201,17 +205,6 @@ fn cloud_relay_from_env() -> Option<(String, Box<dyn vena_core::inference::Infer
     let model = std::env::var("VENA_MODEL").unwrap_or_else(|_| "gpt-4o-mini".into());
     let client = OpenAiClient::new(&base, &key, &model);
     Some((format!("{base} ({model})"), Box::new(client)))
-}
-
-fn slugify(s: &str) -> String {
-    s.to_lowercase()
-        .chars()
-        .map(|c| if c.is_alphanumeric() { c } else { '-' })
-        .collect::<String>()
-        .split('-')
-        .filter(|p| !p.is_empty())
-        .collect::<Vec<_>>()
-        .join("-")
 }
 
 fn tempdir() -> Result<PathBuf> {

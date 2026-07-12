@@ -1092,26 +1092,7 @@ fn bundled_packages() -> Vec<PathBuf> {
     out
 }
 
-fn slugify(s: &str) -> String {
-    s.to_lowercase()
-        .chars()
-        .map(|c| if c.is_alphanumeric() { c } else { '-' })
-        .collect::<String>()
-        .split('-')
-        .filter(|p| !p.is_empty())
-        .collect::<Vec<_>>()
-        .join("-")
-}
-
-fn unique_slug(store: &Store, slug: &str) -> Result<String> {
-    let mut candidate = slug.to_string();
-    let mut n = 1;
-    while store.slug_exists(&candidate)? {
-        n += 1;
-        candidate = format!("{slug}-{n}");
-    }
-    Ok(candidate)
-}
+use vena_core::util::{slugify, unique_slug};
 
 // ============================ F5c: dictionary & translate ============================
 

@@ -4,7 +4,7 @@
 //!
 //!   POST /api/<command>       body: JSON args → JSON result (VenaError → {code,message})
 //!   GET  /api/events          event queue drain (forge:progress, companion:stage, …)
-//!   GET  /<path>              static files from ui/dist (when built)
+//!   GET  /<path>              static files from ui-dc (the shipped design)
 //!
 //! Four worker threads so long commands (forge, downloads) never block the events
 //! poll — live progress stays live.
@@ -99,7 +99,7 @@ fn handle(mut req: tiny_http::Request, api: &Arc<AppApi>, events: &Events) {
         return;
     }
 
-    // Static UI (ui/dist) with SPA fallback.
+    // Static UI (ui-dc) with SPA fallback.
     let ui_root = ui_dist();
     let rel = url.trim_start_matches('/').split('?').next().unwrap_or("");
     let candidate = if rel.is_empty() { "index.html" } else { rel };
@@ -127,7 +127,7 @@ fn handle(mut req: tiny_http::Request, api: &Arc<AppApi>, events: &Events) {
         }
         Err(_) => {
             let _ = req.respond(
-                tiny_http::Response::from_string("ui not built — run npm run build in ui/")
+                tiny_http::Response::from_string("ui-dc not found — run node ui-dc/build.mjs")
                     .with_status_code(404),
             );
         }
