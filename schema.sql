@@ -73,4 +73,27 @@ CREATE TABLE IF NOT EXISTS theory (
   text TEXT NOT NULL, logged_at_chapter INTEGER NOT NULL,
   resolved_status TEXT, resolved_at_chapter INTEGER);
 
+-- Story graph (v2.0, §6b) — a DERIVED VIEW of the ledger, never a second source of
+-- truth. Non-character entities (places/factions/items); characters stay in
+-- `character`. Edges reference entities by string key ("char:<id>" | "place:<id>" | …).
+CREATE TABLE IF NOT EXISTS entity (
+  id INTEGER PRIMARY KEY, story_id INTEGER NOT NULL REFERENCES story(id),
+  kind TEXT NOT NULL,                 -- place | faction | item
+  name TEXT NOT NULL, aliases_json TEXT NOT NULL DEFAULT '[]',
+  first_appearance_chapter INTEGER NOT NULL DEFAULT 1,
+  meta_json TEXT NOT NULL DEFAULT '{}');
+
+-- Chapter-stamped relationship edges. Graph traversal is spoiler-gated BY
+-- CONSTRUCTION: queries only walk edges with since_chapter <= progress and
+-- (until_chapter IS NULL OR until_chapter > progress). Every edge cites a fact.
+CREATE TABLE IF NOT EXISTS edge (
+  id INTEGER PRIMARY KEY, story_id INTEGER NOT NULL REFERENCES story(id),
+  from_entity TEXT NOT NULL,          -- "char:3" | "place:7" | ...
+  to_entity TEXT NOT NULL,
+  rel_type TEXT NOT NULL,             -- knows | allied_with | loves | betrays | hunts | at_place | ...
+  since_chapter INTEGER NOT NULL,
+  until_chapter INTEGER,              -- NULL = still valid
+  source_fact_id INTEGER REFERENCES fact(id));
+CREATE INDEX IF NOT EXISTS idx_edge_gate ON edge (story_id, since_chapter);
+
 CREATE TABLE IF NOT EXISTS setting (key TEXT PRIMARY KEY, value TEXT NOT NULL);

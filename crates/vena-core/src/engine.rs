@@ -56,7 +56,13 @@ impl Engine {
 
         // ---- STAGE 1: GATE (deterministic SQL) ----
         on_stage("gate");
-        let visible = store.gated_facts(story_id, progress, character_id, message, 24)?;
+        let keyword = store.gated_facts(story_id, progress, character_id, message, 24)?;
+        // ---- STAGE 1.5: graph-guided retrieval (§6b) ----
+        // Resolve entities in the message, walk their gated ego-network, merge the
+        // linked facts with the keyword hits. Graph edges are chapter-stamped so this
+        // stays spoiler-safe by construction.
+        let graph = store.graph_facts(story_id, progress, character_id, message, 2)?;
+        let visible = crate::graph::merge_retrieval(keyword, graph, message, 24);
         let forbidden = store.forbidden_facts(story_id, progress, character_id)?;
         let unmet = store.unmet_character_names(story_id)?;
         let character = match character_id {

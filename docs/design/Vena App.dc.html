@@ -1144,11 +1144,47 @@ a{color:#dd3427}a:hover{color:#b02218}
               <div style="font-size:12px;letter-spacing:.08em;font-weight:600">CLOUD RELAY <span style="font-family:'IBM Plex Mono',monospace;font-size:8px;color:var(--red)">LEAVES YOUR DEVICE</span></div>
               <div style="font-family:'Source Serif 4',serif;font-size:11px;color:var(--mut);margin-top:2px">Borrow a bigger model for richer voices. Off by default — and the ledger gate still runs locally, before anything is sent.</div>
             </div>
-            <button onClick="{{ relayToggle }}" style="flex:none;border:2.5px solid var(--ink);width:58px;padding:5px 0;font-family:'Anton',sans-serif;font-size:11px;letter-spacing:.08em;cursor:pointer;background: {{ relayBg }}; color: {{ relayCol }}">{{ relayLabel }}</button>
+            <button onClick="{{ relayCfgOpenFn }}" aria-label="Configure cloud relay" style="flex:none;border:2.5px solid var(--ink);min-height:44px;padding:5px 14px;font-family:'Anton',sans-serif;font-size:11px;letter-spacing:.08em;cursor:pointer;background:none;color:var(--ink)" style-hover="background:var(--ink);color:var(--inv)" style-focus="box-shadow:0 0 0 3px var(--cyan)">⚙ CONFIG</button>
+            <button onClick="{{ relayToggle }}" aria-label="Cloud relay" aria-pressed="{{ relayPressed }}" style="flex:none;border:2.5px solid var(--ink);width:58px;min-height:44px;padding:5px 0;font-family:'Anton',sans-serif;font-size:11px;letter-spacing:.08em;cursor:pointer;background: {{ relayBg }}; color: {{ relayCol }}">{{ relayLabel }}</button>
           </div>
         </div>
 
         <!-- SPOILER ENGINE -->
+        <!-- PAINT ENGINE -->
+        <div style="background:var(--panel);padding:18px 20px;display:flex;flex-direction:column">
+          <div style="display:flex;align-items:center;gap:10px">
+            <span style="font-family:'Anton',sans-serif;font-size:16px;letter-spacing:.04em">THE PAINT ENGINE</span>
+            <span style="font-family:'IBM Plex Mono',monospace;font-size:8.5px;letter-spacing:.1em;color:var(--mut2)">LOCAL IMAGE MODELS · COVERS &amp; PORTRAITS</span>
+          </div>
+          <div style="display:flex;flex-direction:column;gap:10px;margin-top:14px">
+            <sc-for list="{{ paintModels }}" as="m" hint-placeholder-count="2">
+              <div onClick="{{ m.pick }}" style="border:3px solid var(--ink);background:var(--bub);padding:12px 14px;display:flex;gap:14px;align-items:center;transition:transform .15s;opacity: {{ m.op }}; box-shadow: {{ m.shdw }}; cursor: {{ m.cur }}">
+                <div style="width:34px;height:34px;flex:none;clip-path:polygon(18% 0,100% 0,82% 100%,0 100%);display:flex;align-items:center;justify-content:center;font-family:'Anton',sans-serif;font-size:12px;background: {{ m.chipBg }}; color: {{ m.chipCol }}">{{ m.chip }}</div>
+                <div style="flex:1;min-width:0">
+                  <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+                    <span style="font-family:'Anton',sans-serif;font-size:14.5px;letter-spacing:.05em">{{ m.name }}</span>
+                    <span style="font-family:'IBM Plex Mono',monospace;font-size:8px;letter-spacing:.08em;color:var(--mut2)">{{ m.size }}</span>
+                    <sc-if value="{{ m.active }}" hint-placeholder-val="{{ false }}">
+                      <span style="background:var(--cyan);color:var(--inv);font-family:'Anton',sans-serif;font-size:9px;letter-spacing:.1em;padding:2px 7px;transform:rotate(-2deg)">PAINTING NOW</span>
+                    </sc-if>
+                  </div>
+                  <div style="font-family:'Source Serif 4',serif;font-size:11.5px;color:var(--mut);margin-top:3px">{{ m.desc }}</div>
+                  <sc-if value="{{ m.downloading }}" hint-placeholder-val="{{ false }}">
+                    <div style="display:flex;align-items:center;gap:10px;margin-top:8px">
+                      <div style="flex:1;height:10px;border:2px solid var(--ink);position:relative;overflow:hidden">
+                        <div style="position:absolute;left:0;top:0;bottom:0;background:repeating-linear-gradient(-45deg,var(--cyan) 0 8px,transparent 8px 16px);background-size:24px 24px;animation:vh-stripe .6s linear infinite;width: {{ m.dlW }}"></div>
+                      </div>
+                      <span style="font-family:'IBM Plex Mono',monospace;font-size:9px;color:var(--mut)">{{ m.dlPct }}%</span>
+                    </div>
+                  </sc-if>
+                </div>
+                <button onClick="{{ m.btnAct }}" aria-label="{{ m.btnAria }}" style="flex:none;border:2.5px solid var(--ink);min-height:44px;padding:7px 13px;font-family:'Anton',sans-serif;font-size:11px;letter-spacing:.08em;background: {{ m.btnBg }}; color: {{ m.btnCol }}; cursor: {{ m.btnCur }}" style-hover="filter:brightness(1.1)" style-focus="box-shadow:0 0 0 3px var(--cyan)">{{ m.btnLabel }}</button>
+              </div>
+            </sc-for>
+          </div>
+          <div style="margin-top:12px;border:2.5px dashed var(--mut2);padding:10px 14px;font-family:'Source Serif 4',serif;font-size:11.5px;color:var(--mut);line-height:1.6">Nothing generates unless <strong>GENERATE MISSING ART</strong> is on. Every image is stamped ✦ AI — art is an overlay, never canon.</div>
+        </div>
+
         <div style="background:var(--panel);padding:18px 20px;display:flex;flex-direction:column">
           <div style="display:flex;align-items:center;gap:10px">
             <span style="font-family:'Anton',sans-serif;font-size:16px;letter-spacing:.04em">THE SPOILER GATE</span>
@@ -1591,6 +1627,77 @@ a{color:#dd3427}a:hover{color:#b02218}
     </div>
   </sc-if>
 
+  <!-- ══ RELAY CONFIG ══ -->
+  <sc-if value="{{ relayCfgOpen }}" hint-placeholder-val="{{ false }}">
+    <div style="position:absolute;inset:0;z-index:72;display:flex;align-items:center;justify-content:center;animation:vh-fade .18s both">
+      <div onClick="{{ relayCfgClose }}" style="position:absolute;inset:0;background:rgba(10,10,14,.62)"></div>
+      <div role="dialog" aria-label="Cloud relay configuration" style="position:relative;width:640px;max-height:88%;overflow:auto;border:3px solid var(--ink);background:var(--panel);box-shadow:10px 10px 0 var(--ink)">
+        <div style="background:var(--ink);color:var(--inv);display:flex;align-items:center;gap:12px;padding:8px 16px;position:sticky;top:0;z-index:2">
+          <span style="font-family:'Anton',sans-serif;font-size:16px;letter-spacing:.06em">CLOUD RELAY — CONFIG</span>
+          <span style="font-family:'IBM Plex Mono',monospace;font-size:8px;letter-spacing:.1em;opacity:.55">THE GATE STILL RUNS LOCALLY FIRST</span>
+          <span style="flex:1"></span>
+          <button onClick="{{ relayCfgClose }}" aria-label="Close relay configuration" style="background:none;border:2px solid var(--inv);color:var(--inv);width:44px;height:44px;font-family:'Anton',sans-serif;font-size:13px;cursor:pointer;padding:0" style-focus="box-shadow:0 0 0 3px var(--cyan)">✕</button>
+        </div>
+        <div style="padding:16px 20px 20px">
+          <div id="relay-prov-label" style="font-family:'IBM Plex Mono',monospace;font-size:8px;letter-spacing:.14em;color:var(--red)">PROVIDER</div>
+          <div role="group" aria-labelledby="relay-prov-label" style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px">
+            <sc-for list="{{ provChips }}" as="p" hint-placeholder-count="4">
+              <button onClick="{{ p.pick }}" aria-pressed="{{ p.pressed }}" style="border:2px solid var(--ink);min-height:44px;padding:0 14px;font-family:'Oswald',sans-serif;font-size:10.5px;letter-spacing:.08em;font-weight:600;cursor:pointer;background: {{ p.bg }};color: {{ p.col }}" style-focus="box-shadow:0 0 0 3px var(--cyan)">{{ p.label }}</button>
+            </sc-for>
+          </div>
+
+          <label for="relay-url" style="display:block;font-family:'IBM Plex Mono',monospace;font-size:8px;letter-spacing:.14em;color:var(--red);margin-top:18px">BASE URL</label>
+          <input id="relay-url" value="{{ relayUrl }}" onChange="{{ relayUrlInput }}" placeholder="https://…/v1" style="width:100%;box-sizing:border-box;margin-top:6px;background:var(--bub);border:2.5px solid var(--ink);padding:12px 13px;min-height:44px;font-size:12.5px;font-family:'IBM Plex Mono',monospace;color:var(--ink);outline:none" style-focus="box-shadow:0 0 0 3px var(--cyan)">
+
+          <label for="relay-key" style="display:block;font-family:'IBM Plex Mono',monospace;font-size:8px;letter-spacing:.14em;color:var(--red);margin-top:16px">API KEY</label>
+          <div style="display:flex;gap:8px;margin-top:6px">
+            <input id="relay-key" type="{{ relayKeyType }}" value="{{ relayKey }}" onChange="{{ relayKeyInput }}" placeholder="sk-…" style="flex:1;min-width:0;background:var(--bub);border:2.5px solid var(--ink);padding:12px 13px;min-height:44px;font-size:12.5px;font-family:'IBM Plex Mono',monospace;color:var(--ink);outline:none;box-sizing:border-box" style-focus="box-shadow:0 0 0 3px var(--cyan)">
+            <button onClick="{{ relayKeyTgl }}" aria-label="Show or hide API key" aria-pressed="{{ relayKeyPressed }}" style="flex:none;border:2.5px solid var(--ink);min-height:44px;padding:0 13px;font-family:'Anton',sans-serif;font-size:11px;letter-spacing:.08em;cursor:pointer;background:none;color:var(--ink)" style-hover="background:var(--ink);color:var(--inv)" style-focus="box-shadow:0 0 0 3px var(--cyan)">{{ relayKeyTglLabel }}</button>
+            <button onClick="{{ relayKeyPaste }}" aria-label="Paste API key from clipboard" style="flex:none;border:2.5px solid var(--ink);min-height:44px;padding:0 13px;font-family:'Anton',sans-serif;font-size:11px;letter-spacing:.08em;cursor:pointer;background:none;color:var(--ink)" style-hover="background:var(--ink);color:var(--inv)" style-focus="box-shadow:0 0 0 3px var(--cyan)">PASTE</button>
+          </div>
+          <div style="font-family:'Source Serif 4',serif;font-size:11px;color:var(--mut);margin-top:6px;line-height:1.55">Stored in your device's keychain. Never written to disk in plain text. Never sent anywhere except the endpoint above.</div>
+
+          <label for="relay-model" style="display:block;font-family:'IBM Plex Mono',monospace;font-size:8px;letter-spacing:.14em;color:var(--red);margin-top:16px">MODEL</label>
+          <div style="display:flex;gap:8px;margin-top:6px">
+            <input id="relay-model" value="{{ relayModel }}" onChange="{{ relayModelInput }}" placeholder="pick below, or type an exact id" style="flex:1;min-width:0;background:var(--bub);border:2.5px solid var(--ink);padding:12px 13px;min-height:44px;font-size:12.5px;font-family:'IBM Plex Mono',monospace;color:var(--ink);outline:none;box-sizing:border-box" style-focus="box-shadow:0 0 0 3px var(--cyan)">
+            <button onClick="{{ relayFetch }}" style="flex:none;background:var(--ink);color:var(--inv);border:none;min-height:44px;padding:0 15px;font-family:'Anton',sans-serif;font-size:11px;letter-spacing:.08em;cursor:pointer;box-shadow:3px 3px 0 var(--red)" style-hover="filter:brightness(1.1)" style-focus="box-shadow:0 0 0 3px var(--cyan)">{{ relayFetchLabel }}</button>
+          </div>
+          <sc-if value="{{ relayModelsHas }}" hint-placeholder-val="{{ false }}">
+            <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px;animation:vh-fade .25s both">
+              <sc-for list="{{ relayModelChips }}" as="mc" hint-placeholder-count="4">
+                <button onClick="{{ mc.pick }}" aria-pressed="{{ mc.pressed }}" style="border:2px solid var(--ink);min-height:44px;padding:0 12px;font-family:'IBM Plex Mono',monospace;font-size:9.5px;letter-spacing:.05em;font-weight:600;cursor:pointer;background: {{ mc.bg }};color: {{ mc.col }}" style-focus="box-shadow:0 0 0 3px var(--cyan)">{{ mc.label }}</button>
+              </sc-for>
+            </div>
+          </sc-if>
+
+          <div style="display:flex;align-items:center;gap:12px;margin-top:16px;border-top:2px solid var(--shdw);padding-top:14px">
+            <div style="flex:1">
+              <div style="font-size:11.5px;letter-spacing:.08em;font-weight:600">IMAGE ENDPOINT</div>
+              <div style="font-family:'Source Serif 4',serif;font-size:11px;color:var(--mut);margin-top:2px">Off: use the same key for portraits &amp; covers. On: point images somewhere else.</div>
+            </div>
+            <button onClick="{{ relayImgEpTgl }}" aria-label="Separate image endpoint" aria-pressed="{{ relayImgEpPressed }}" style="flex:none;border:2.5px solid var(--ink);width:58px;min-height:44px;font-family:'Anton',sans-serif;font-size:11px;letter-spacing:.08em;cursor:pointer;background: {{ relayImgEpBg }}; color: {{ relayImgEpCol }}" style-focus="box-shadow:0 0 0 3px var(--cyan)">{{ relayImgEpState }}</button>
+          </div>
+
+          <div style="display:flex;align-items:center;gap:12px;margin-top:16px">
+            <button onClick="{{ relayTest }}" style="background:var(--red);color:#fff;border:none;min-height:44px;padding:0 18px;font-family:'Anton',sans-serif;font-size:13px;letter-spacing:.08em;cursor:pointer;box-shadow:4px 4px 0 var(--ink);transition:transform .15s,box-shadow .15s" style-hover="transform:translate(2px,2px);box-shadow:2px 2px 0 var(--ink)" style-focus="box-shadow:0 0 0 3px var(--cyan)">{{ relayTestLabel }}</button>
+            <sc-if value="{{ relayTestRunning }}" hint-placeholder-val="{{ false }}">
+              <span style="font-family:'IBM Plex Mono',monospace;font-size:9px;letter-spacing:.08em;color:var(--mut2);animation:vh-shimmer 1s infinite">ONE ROUND-TRIP · GATE FIRST, PROMPT SECOND…</span>
+            </sc-if>
+            <sc-if value="{{ relayTestDone }}" hint-placeholder-val="{{ false }}">
+              <div style="display:flex;align-items:center;gap:10px;animation:vh-fade .3s both">
+                <span style="font-family:'IBM Plex Mono',monospace;font-size:9.5px;letter-spacing:.06em;color:var(--cyan);font-weight:600">{{ relayTestResult }}</span>
+                <span style="font-family:'Anton',sans-serif;font-size:10.5px;letter-spacing:.08em;color:var(--cyan);border:2.5px solid var(--cyan);padding:3px 9px;transform:rotate(-2deg)">LEDGER GATE VERIFIED ✓</span>
+              </div>
+            </sc-if>
+          </div>
+          <sc-if value="{{ relayTestDone }}" hint-placeholder-val="{{ false }}">
+            <div style="font-family:'IBM Plex Mono',monospace;font-size:7.5px;letter-spacing:.08em;color:var(--mut2);margin-top:8px">GATING RAN LOCALLY BEFORE THE PROMPT LEFT — ALWAYS.</div>
+          </sc-if>
+        </div>
+      </div>
+    </div>
+  </sc-if>
+
   <!-- ══ LEAK REPORT ══ -->
   <sc-if value="{{ leakOpen }}" hint-placeholder-val="{{ false }}">
     <div style="position:absolute;inset:0;z-index:70;display:flex;align-items:center;justify-content:center;animation:vh-fade .18s both">
@@ -1690,6 +1797,8 @@ class Component extends DCLogic {
     readerQ: '', bookmarked: false, readerMode: 'scroll', pageN: 3, tglSerial: true, pendingQuote: null,
     noteDraft: '', notes: [{ quote: '\u2026kept the crushed garlic close about her throat\u2026', text: 'Garlic again \u2014 he KNOWS. This is a ward, not medicine.', at: 'CH.XII' }],
     tglAiDef: true, targetLang: 'fr', rollingTr: false, transOpen: false,
+    paintModel: 'sketch',
+    relayCfgOpen: false, relayProv: 'openrouter', relayUrl: 'https://openrouter.ai/api/v1', relayKey: '', relayShowKey: false, relayModel: '', relayModels: [], relayFetchSt: 'idle', relayImgEp: false, relayTestSt: 'idle', relayLatency: null,
     mangaOpen: false, mangaPage: 12, mangaRtl: true, mangaSpread: true, mangaFlow: 'pages', visionSt: 'idle', visionPct: 0, langOpen: false
   };
 
@@ -1918,7 +2027,7 @@ class Component extends DCLogic {
   }
 
   componentDidMount() {
-    this._esc = e => { if (e.key === 'Escape') this.setState({ chatOpen: false, delModal: null, typeOpen: false, wikiArmed: false, leakOpen: false, leakMsg: null, tocOpen: false, notesOpen: false, selOpen: false, dictOpen: false, whoId: null, transOpen: false, mangaOpen: false, langOpen: false }); };
+    this._esc = e => { if (e.key === 'Escape') this.setState({ chatOpen: false, delModal: null, typeOpen: false, wikiArmed: false, leakOpen: false, leakMsg: null, tocOpen: false, notesOpen: false, selOpen: false, dictOpen: false, whoId: null, transOpen: false, mangaOpen: false, langOpen: false, relayCfgOpen: false }); };
     document.addEventListener('keydown', this._esc);
     this._forge = setInterval(() => {
       this.setState(s => s.forgePct >= 97 ? null : { forgePct: s.forgePct + 1, forgeFacts: s.forgeFacts + 17 });
@@ -2576,205 +2685,4 @@ class Component extends DCLogic {
       wikiTalk: () => this._toast('TALK PAGES ARRIVE WITH SHARED SHELVES'),
       wikiRandom: () => { if (!wikiData) return; const s = wikiData.sections[Math.floor(Math.random() * wikiData.sections.length)]; this.setState({ wikiSection: s.id }); this._toast('RANDOM PAGE \u2192 ' + s.label); },
       wikiLead: curSec ? ({
-        fates: 'Every named character, and how the story leaves them \u2014 nothing softened, nothing held back. Each entry is stamped with the chapter where the ledger records it.',
-        timeline: 'The full shape of the plot from first page to last, with the chapter where each turn of the knife lands.',
-        trivia: 'Margin notes and misconceptions \u2014 what the films added, what the book never said, and what everyone misremembers.'
-      })[curSec.id] : '',
-      wikiCats: (ab && ab.id === 'frank'
-        ? ['GOTHIC SCIENCE FICTION', 'FRAME NARRATIVE', '1818', 'FULL SPOILERS']
-        : ['GOTHIC HORROR', 'EPISTOLARY NOVEL', 'VAMPIRES', '1897', 'FULL SPOILERS']).map(x => ({ label: x })),
-      wikiStats1: (wikiData ? wikiData.sections.reduce((a, x) => a + x.entries.length, 0) : 0) + ' ENTRIES \u00b7 ' + (wikiData ? wikiData.sections.length : 0) + ' PAGES',
-      wikiStats2: 'EVERY LINE CITED TO THE LEDGER',
-      wikiFooterMeta: 'LAST EDITED BY THE LEDGER \u00b7 JUST NOW \u00b7 CONTENT DRAWN ONLY FROM THE BOOK ITSELF \u00b7 NOTHING HERE LEAVES THIS DEVICE',
-      wikiInfoHas: !!(wikiData && wikiData.infobox),
-      wikiInfoTitle: wikiData && wikiData.infobox ? wikiData.infobox.title : '',
-      wikiInfo: wikiData && wikiData.infobox ? wikiData.infobox.rows : [],
-
-      readerReady: compReady,
-      readerEmpty: !compReady,
-      readerEmptyHead: compEmpty ? 'THE SHELF IS EMPTY' : compForging ? 'THE LEDGER IS STILL FORGING' : 'PAGE ONE AWAITS',
-      readerEmptyBody: compEmpty ? 'Every book was burned. Import an EPUB and the reader wakes again.' : compForging ? 'The reader opens as soon as the ledger seals \u2014 the companion refuses to walk ahead of its own promise.' : 'You haven\u2019t started this one. Open Chapter I and the companion starts learning at your pace.',
-      readerEmptyBtn: compEmpty ? 'GO TO LIBRARY \u2192' : compForging ? 'CHECK THE LIBRARY \u2192' : 'BEGIN CHAPTER I \u2192',
-      readerEmptyAct: compEmpty || compForging ? go('library') : (() => this._toast('IN THE REAL APP, CHAPTER I OPENS HERE')),
-      readerWCss: ({ s: '560px', m: '720px', l: '900px' })[st.readerW],
-      readerFfCss: ({ serif: "'Source Serif 4',serif", sans: 'ui-sans-serif,system-ui,sans-serif', mono: "'IBM Plex Mono',monospace" })[st.readerFf],
-      readerLhCss: ({ s: '1.6', m: '1.85', l: '2.15' })[st.readerLh],
-      readerAlignCss: st.readerJust ? 'justify' : 'left',
-      typeOpen: st.typeOpen,
-      typeToggle: () => this.setState({ typeOpen: !st.typeOpen }),
-      typeBtnBg: st.typeOpen ? 'var(--ink)' : 'var(--panel)',
-      typeBtnCol: st.typeOpen ? 'var(--inv)' : 'var(--ink)',
-      typeBtnLabel: st.typeOpen ? 'Aa TYPE ✕' : 'Aa TYPE',
-      ffOpts: seg('readerFf', [{ v: 'serif', label: 'SERIF' }, { v: 'sans', label: 'SANS' }, { v: 'mono', label: 'TYPE' }]),
-      lhOpts: seg('readerLh', [{ v: 's', label: 'TIGHT' }, { v: 'm', label: 'BOOK' }, { v: 'l', label: 'AIRY' }]),
-      wOpts: seg('readerW', [{ v: 's', label: 'NARROW' }, { v: 'm', label: 'CLASSIC' }, { v: 'l', label: 'WIDE' }]),
-      alignOpts: [
-        { label: 'LEFT', bg: !st.readerJust ? 'var(--ink)' : 'transparent', col: !st.readerJust ? 'var(--inv)' : 'var(--ink)', pick: () => this.setState({ readerJust: false }) },
-        { label: 'JUST', bg: st.readerJust ? 'var(--ink)' : 'transparent', col: st.readerJust ? 'var(--inv)' : 'var(--ink)', pick: () => this.setState({ readerJust: true }) }
-      ],
-
-      leakOpen: st.leakOpen,
-      leakLine: st.leakMsg ? '\u201c' + (st.leakMsg.length > 140 ? st.leakMsg.slice(0, 140) + '\u2026' : st.leakMsg) + '\u201d' : 'Reported from the hub \u2014 no line attached.',
-      leakCtx: [
-        { k: 'CHARACTER', v: charObj.name.toUpperCase() },
-        { k: 'CHAPTER GATE', v: '\u2264 CH.' + ch },
-        { k: 'MODEL', v: st.relay ? 'RELAY (CLOUD)' : st.model === 'quill' ? 'QUILL\u00b77B LOCAL' : 'INK\u00b73B LOCAL' },
-        { k: 'GATE MODE', v: st.strict.toUpperCase() }
-      ],
-      leakReasons: [
-        { id: 'future', label: 'NAMES A FUTURE EVENT' },
-        { id: 'character', label: 'NAMES SOMEONE UNMET' },
-        { id: 'tone', label: 'TONE IMPLIES THE ENDING' },
-        { id: 'other', label: 'SOMETHING ELSE' }
-      ].map(r => ({
-        label: r.label,
-        bg: st.leakReason === r.id ? 'var(--ink)' : 'transparent',
-        col: st.leakReason === r.id ? 'var(--inv)' : 'var(--ink)',
-        pick: () => this.setState({ leakReason: r.id })
-      })),
-      leakCancel: () => this.setState({ leakOpen: false, leakMsg: null }),
-      leakSubmit: () => { this._buzz(); this.setState({ leakOpen: false, leakMsg: null }); this._toast('LEAK FILED \u2014 THE GATE ADDS A RULE FOR THIS BOOK'); },
-      delModalHas: !!delB,
-      delTitle: delB ? delB.title : '', delTitleUp: delB ? delB.title : '',
-      delCover: delB ? delB.cover : 'var(--ink)',
-      delStats: delB ? (delB.status === 'forging' ? 'LEDGER ' + st.forgePct + '% FORGED \u00b7 DELETING CANCELS THE FORGE' : (delB.stats || '')) : '',
-      delCancel: () => this.setState({ delModal: null }),
-      delConfirm: () => {
-        const id = st.delModal;
-        const deleted = { ...st.deleted, [id]: true };
-        const still = this.bookDefs.filter(b => !deleted[b.id]);
-        const upd = { deleted, delModal: null };
-        if (st.book === id) upd.book = still.length ? still[0].id : null;
-        this.setState(upd);
-        this._toast('BOOK BURNED \u2014 LEDGER, THEORIES AND CHATS WENT WITH IT');
-      }
-    };
-
-    return {
-      noop: () => {}, ch, chRoman, themeName, ...extra,
-      pctLabel: pct + '%',
-      scrLibrary: st.screen === 'library', scrCompanion: st.screen === 'companion',
-      scrReader: st.screen === 'reader', scrSettings: st.screen === 'settings',
-      navTabs,
-      goReader: go('reader'), goCompanion: go('companion'),
-      telemetry: 'LEDGER FORGED \u2713 SHA A3F2\u2026C9 COVERAGE 96%',
-      modelBadge: st.relay ? 'RELAY (CLOUD)' : st.model === 'quill' ? 'QUILL\u00b77B LOCAL' : 'INK\u00b73B LOCAL',
-      setDay: () => this.setState({ theme: 'light' }),
-      setNight: () => this.setState({ theme: 'dark' }),
-      dayBg: dark ? 'transparent' : 'var(--ink)', dayCol: dark ? 'var(--ink)' : 'var(--inv)',
-      nightBg: dark ? 'var(--ink)' : 'transparent', nightCol: dark ? 'var(--inv)' : 'var(--ink)',
-      spoiledMe: () => this.setState({ leakOpen: true, leakMsg: null }),
-
-      books,
-
-      castMeta: met.length + ' MET \u00b7 ' + unmet.length + ' STILL AHEAD',
-      cast: met.map(x => ({
-        init: x.init, nameUp: x.name.toUpperCase(), metR: this.roman(x.metCh),
-        bg: st.tglArt && this.artMap[x.id] ? this.artMap[x.id] : 'linear-gradient(168deg,#3a3a44 0%,#17171d 70%)',
-        gen: !!(st.tglArt && this.bustMap[x.id]),
-        plain: !(st.tglArt && this.bustMap[x.id]),
-        bust: this.bustMap[x.id] || {},
-        slotId: 'cast-' + x.id,
-        slotPh: x.name + ' \u2014 drop the AI render',
-        open: () => this.setState({ chatOpen: true, char: x.id })
-      })),
-      silhouettes: st.tglSilhouettes ? unmet.map(u => ({ hint: u.hint || 'Keep reading' })) : [],
-      ticks: mkTicks(ch, false),
-
-      chatOpen: st.chatOpen,
-      chatClose: () => this.setState({ chatOpen: false }),
-      charInit: charObj.init, charNameUp: charObj.name.toUpperCase(),
-      charBg: st.tglArt && this.artMap[charObj.id] ? this.artMap[charObj.id] : 'linear-gradient(168deg,#3a3a44 0%,#141419 75%)',
-      charGen: !!(st.tglArt && this.bustMap[charObj.id]),
-      charPlain: !(st.tglArt && this.bustMap[charObj.id]),
-      charBust: this.bustMap[charObj.id] || {},
-      charSlotId: 'splash-' + charObj.id,
-      charSlotPh: charObj.name + ' \u2014 drop the AI render',
-      charRoleUp: charObj.role.toUpperCase(), charLastUp: last(charObj.name).toUpperCase(),
-      charShort: charObj.short,
-      switcher: met.map(x => ({ init: x.init, name: x.name, col: x.id === charObj.id ? 'var(--red)' : 'var(--inv)', pick: () => this.setState({ char: x.id }) })),
-      msgs: (st.chats[charObj.id] || []).map(m => ({
-        ...m,
-        pin: () => { if (!m.bot) return; const q = m.text.length > 90 ? m.text.slice(0, 90) + '\u2026' : m.text; this.setState({ userTheories: [...this.state.userTheories, charObj.short + ' is hiding something: \u201c' + q + '\u201d'] }); this._toast('PINNED FROM CHAT \u2014 IT TURNS WHEN THE STORY DOES'); },
-        report: () => this.setState({ leakOpen: true, leakMsg: m.text })
-      })),
-      streamingHas: st.phase === 'gen' && st.stream.length > 0, stream: st.stream,
-      thinking: !!st.phase && st.tglStamps, steps,
-      showChips: (st.chats[charObj.id] || []).length === 0 && !st.phase,
-      chips: [
-        { label: 'WHAT DO YOU MAKE OF LUCY\u2019S ILLNESS?', send: () => this._send('What do you make of Lucy\u2019s illness?') },
-        { label: 'IS LUCY GOING TO DIE?', send: () => this._send('Is Lucy going to die?') }
-      ],
-      input: st.input,
-      onInput: e => this.setState({ input: e.target.value }),
-      onKey: e => { if (e.key === 'Enter') this._send(); },
-      send: () => this._send(),
-
-      recapIdle: !st.recapOpen,
-      recapRolling: st.recapOpen,
-      recap: st.recap, recapDone: st.recapDone,
-      recapStreaming: st.recapOpen && !st.recapDone,
-      recapPlay: () => { this.setState({ recapOpen: true }); this._streamRecap(); },
-      recapAgain: () => { this.setState({ recap: '', recapDone: false }); this._later(() => this._streamRecap(), 60); },
-
-      flipT: st.resolved ? 'rotateY(180deg)' : 'none',
-      resolved: st.resolved,
-      resolve: () => { this._buzz(); this.setState({ resolved: true }); },
-      theoryMeta: (4 + st.userTheories.length + 1) + ' PINNED',
-      theories,
-      newTheory: st.newTheory,
-      theoryInput: e => this.setState({ newTheory: e.target.value }),
-      theoryKey: e => { if (e.key === 'Enter' && st.newTheory.trim()) { this.setState({ userTheories: [...st.userTheories, st.newTheory.trim()], newTheory: '' }); this._toast('THEORY PINNED \u2014 IT TURNS WHEN THE STORY DOES'); } },
-      addTheory: () => { if (st.newTheory.trim()) { this.setState({ userTheories: [...st.userTheories, st.newTheory.trim()], newTheory: '' }); this._toast('THEORY PINNED \u2014 IT TURNS WHEN THE STORY DOES'); } },
-
-      branches: st.branches.map(t => ({ titleUp: t.toUpperCase() })),
-      branchDraft: st.branchDraft,
-      branchInput: e => this.setState({ branchDraft: e.target.value }),
-      branchKey: e => { if (e.key === 'Enter' && st.branchDraft.trim()) this.setState({ branches: [...st.branches, st.branchDraft.trim()], branchDraft: '' }); },
-      addBranch: () => { if (st.branchDraft.trim()) this.setState({ branches: [...st.branches, st.branchDraft.trim()], branchDraft: '' }); },
-
-      whoPeople: this.whoPeople.map(w => ({ ...w, nameUp: w.name.toUpperCase() })),
-      whoPlaces: this.whoPlaces.map(w => ({ ...w, nameUp: w.name.toUpperCase() })),
-      whoTerms: this.whoTerms.map(w => ({ ...w, nameUp: w.name.toUpperCase() })),
-
-      readerFs: fsMap[st.fontScale],
-      fsOpts,
-      askPassage: () => this.setState({ chatOpen: true, char: 'vh', input: 'Why do you insist on the garlic? What is it for?' }),
-      askFab: () => this.setState({ chatOpen: true }),
-      markRead: () => {
-        if (ch >= 27) { this._toast('THAT WAS THE LAST PAGE.'); return; }
-        const next = ch + 1;
-        const newlyMet = this.fullCast.find(c => c.metCh === next);
-        this._buzz();
-        this.setState({ chOverride: next });
-        this._toast(newlyMet
-          ? 'HORIZON MOVED \u2192 CH.' + next + ' \u00b7 SOMEONE NEW STEPS OUT OF THE INK'
-          : 'HORIZON MOVED \u2192 CH.' + next + ' \u00b7 THE CAST HAS CAUGHT UP TO YOU');
-      },
-
-      models,
-      relayBg: st.relay ? 'var(--red)' : 'transparent',
-      relayCol: st.relay ? '#fff' : 'var(--mut2)',
-      relayLabel: st.relay ? 'ON' : 'OFF',
-      relayToggle: () => { const v = !st.relay; this.setState({ relay: v }); this._toast(v ? 'RELAY ON \u2014 GATED TEXT ONLY LEAVES THE DEVICE' : 'RELAY OFF \u2014 FULLY LOCAL AGAIN'); },
-
-      strictOpts, strictDesc: strictDescs[st.strict],
-      engineToggles,
-      gateBtnLabel: st.gateState === 'running' ? 'PROBING\u2026' : 'RUN 12 PROBES',
-      gateTest: () => {
-        if (st.gateState === 'running') return;
-        this.setState({ gateState: 'running' });
-        this._later(() => { this.setState({ gateState: 'done' }); }, 1900);
-      },
-      gateResultHas: st.gateState === 'done',
-      gateResult: '12/12 FUTURE PROBES BLOCKED \u2713 \u00b7 0 LEAKS \u00b7 AVG GATE TIME 0.41S \u00b7 LAST RUN: JUST NOW',
-
-      recapTgl: mkTgl('tglAutoRecap').flip, recapTglBg: st.tglAutoRecap ? 'var(--ink)' : 'transparent',
-      recapTglCol: st.tglAutoRecap ? 'var(--inv)' : 'var(--mut2)', recapTglState: st.tglAutoRecap ? 'ON' : 'OFF',
-      resealTgl: mkTgl('tglReseal').flip, resealTglBg: st.tglReseal ? 'var(--ink)' : 'transparent',
-      resealTglCol: st.tglReseal ? 'var(--inv)' : 'var(--mut2)', resealTglState: st.tglReseal ? 'ON' : 'OFF',
-      chDown: () => { if (ch > 1) { this.setState({ chOverride: ch - 1 }); this._toast('HORIZON PULLED BACK \u2192 CH.' + (ch - 1) + ' \u00b7 THE CAST FORGETS'); } },
-      chUp: () => { if (ch < 27) { this.setState({ chOverride: ch + 1 }); this._toast('HORIZON MOVED \u2192 CH.' + (ch + 1)); } },
-
-      exportData: () => this._toast('THEORIES, NOTES & BRANCHES \u2192 VENA-DRACULA.JSON'),
-      wipeBook: () => { if (ab) this.setState({ delModal: ab.id }); else this._toast('THE SHELF IS ALREADY EMP
+        fates: 'Every named character, and how the story leaves them \u2014 nothing softened, nothing held back. Each entry is stamp

@@ -390,6 +390,96 @@ fn cloud_relay_never_receives_ungated_content() {
 }
 
 #[test]
+fn story_graph_edges_are_chapter_gated() {
+    let (s, sid, ids) = fixture();
+    let j = ids["jonathan"];
+    let m = ids["mina"];
+    let l = ids["lucy"];
+    // Jonathan & Mina engaged since ch3; Lucy & Arthur-ish tie since ch5; a
+    // "betrayal"-style edge that only becomes true at ch15 (future).
+    s.add_edge(
+        sid,
+        &format!("char:{j}"),
+        &format!("char:{m}"),
+        "loves",
+        3,
+        None,
+        None,
+    )
+    .unwrap();
+    s.add_edge(
+        sid,
+        &format!("char:{m}"),
+        &format!("char:{l}"),
+        "friend_of",
+        5,
+        None,
+        None,
+    )
+    .unwrap();
+    s.add_edge(
+        sid,
+        &format!("char:{l}"),
+        "entity:99",
+        "becomes",
+        15,
+        None,
+        None,
+    )
+    .unwrap();
+
+    // At ch6: the ch15 edge is invisible; the ch3/ch5 edges are visible.
+    let gated = s.gated_edges(sid, 6).unwrap();
+    assert!(gated.iter().any(|e| e.rel_type == "loves"));
+    assert!(gated.iter().any(|e| e.rel_type == "friend_of"));
+    assert!(
+        !gated.iter().any(|e| e.rel_type == "becomes"),
+        "future edge must be gated"
+    );
+
+    // Ego-network from Jonathan reaches Mina (1 hop) and Lucy (2 hops), never the
+    // future "becomes" edge.
+    let net = s.ego_network(sid, 6, &[format!("char:{j}")], 2).unwrap();
+    let reached: std::collections::HashSet<&str> = net
+        .iter()
+        .flat_map(|e| [e.from_entity.as_str(), e.to_entity.as_str()])
+        .collect();
+    assert!(reached.contains(format!("char:{m}").as_str()));
+    assert!(reached.contains(format!("char:{l}").as_str()));
+    assert!(!reached.contains("entity:99"));
+}
+
+#[test]
+fn graph_retrieval_pulls_linked_facts() {
+    let (s, sid, ids) = fixture();
+    let j = ids["jonathan"];
+    let m = ids["mina"];
+    s.set_progress(sid, 6, 0).unwrap();
+    // Edge Jonathan<->Mina; a fact about Mina at ch3.
+    s.add_edge(
+        sid,
+        &format!("char:{j}"),
+        &format!("char:{m}"),
+        "loves",
+        3,
+        None,
+        None,
+    )
+    .unwrap();
+    // Asking about Jonathan should surface Mina's linked (gated) fact via the graph,
+    // even though the message doesn't mention "engaged".
+    let facts = s
+        .graph_facts(sid, 6, None, "Tell me about Jonathan.", 2)
+        .unwrap();
+    assert!(
+        facts.iter().any(|f| f.text.contains("engaged")),
+        "graph retrieval should reach Mina's engagement fact from Jonathan"
+    );
+    // But a future fact is never reachable this way.
+    assert!(!facts.iter().any(|f| f.text.contains("Lucy dies")));
+}
+
+#[test]
 fn probes_are_blocked_by_the_gate() {
     let (s, sid, _) = fixture();
     s.set_progress(sid, 6, 0).unwrap();

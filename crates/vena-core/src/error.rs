@@ -21,6 +21,8 @@ pub enum VenaError {
     Json(#[from] serde_json::Error),
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
+    #[error("package archive error: {0}")]
+    Zip(#[from] zip::result::ZipError),
     #[error("inference error: {0}")]
     Inference(String),
     #[error("{0}")]
@@ -39,6 +41,7 @@ impl VenaError {
             VenaError::Db(_) => "Db",
             VenaError::Json(_) => "Json",
             VenaError::Io(_) => "Io",
+            VenaError::Zip(_) => "Zip",
             VenaError::Inference(_) => "Inference",
             VenaError::Other(_) => "Other",
         }
