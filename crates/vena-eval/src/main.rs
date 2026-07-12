@@ -456,15 +456,6 @@ fn report_leaked(reply: &str, forbidden: &[String]) -> bool {
     forbidden.iter().any(|t| l.contains(&t.to_lowercase()))
 }
 
-fn backend_from_env() -> Option<(String, Box<dyn Inference>)> {
-    let base = std::env::var("VENA_BASE_URL").ok()?;
-    let key = std::env::var("VENA_API_KEY").unwrap_or_default();
-    let model = std::env::var("VENA_MODEL").unwrap_or_else(|_| "gpt-4o-mini".into());
-    Some((
-        format!("{base} ({model})"),
-        Box::new(OpenAiClient::new(&base, &key, &model)),
-    ))
-}
 
 /// Export the EXACT gated prompts (stages 1–2 via the production `gate_and_assemble`)
 /// so an out-of-process model (or a person) can answer them. One JSON per line:

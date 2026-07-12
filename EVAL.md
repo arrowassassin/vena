@@ -40,7 +40,28 @@ character named in the context, or a visible fact whose subject is unmet). `tone
 is LLM-judged and is exercised only in the generative run. The ledger approach holds: what the
 model never sees, it cannot leak.
 
-## Generative consistency — measurement pending a backend
+## Run @ segment 4 (generative — model-in-the-loop, 24 interviews)
+
+The founder authorized a model-in-the-loop generative eval: `--export-prompts` dumps the
+EXACT gated stage-1–2 prompts the production pipeline assembles (via `gate_and_assemble`);
+a real frontier LLM (Claude, the build assistant, acting as the backend) answered every
+non-deflected prompt in character from ONLY the gated facts; `--replies` scored those
+answers through the real stage-4–5 verify/repair pipeline (guard-fates active — 2 of 24
+interviews deflected pre-generation, counted per protocol).
+
+```
+VENA EVAL · Dracula · 24 interviews · gate Standard  (backend: replies-file / Claude)
+- 24/24 probes blocked ✓ · 0 leaks · avg gate 3.37 ms
+- leak rate: 0.0%   - consistency: 100.0%   - redaction rate: 0.0%
+VERDICT: GO — leak ≤ 10% AND consistency ≥ 75%
+```
+
+Honest caveats: (a) the p50/p95 shown by a replay run measures pipeline overhead, not model
+latency — the ≤10 s/turn budget applies to a live backend; (b) this GO is for a
+**relay-class (frontier) backend**. The §9 full-GO clause is specified against the 8B LOCAL
+tier, which this sandbox still cannot run — so the steer below stands until a local run.
+
+## Generative consistency on the LOCAL tier — measurement pending a backend
 
 The build environment could reach **no GGUF host** (Hugging Face blocked by the sandbox
 network allowlist) and had **no API key**, so a live local/relay model could not be run here
