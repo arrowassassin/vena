@@ -3,7 +3,7 @@ import fs from "node:fs";
 function build(src, out, patchRef) {
   let h = fs.readFileSync(`../docs/design/${src}`, "utf8");
   h = h.replace('<script src="./support.js"></script>',
-    '<link rel="stylesheet" href="./fonts/fonts.css">\n<script src="./react.js"></script>\n<script src="./react-dom.js"></script>\n<script src="./vena-bridge.js"></script>\n<script src="./support.js"></script>');
+    '<link rel="stylesheet" href="./fonts/fonts.css">\n<script src="./react.js"></script>\n<script src="./react-dom.js"></script>\n<script src="./dc-shims.js"></script>\n<script src="./vena-bridge.js"></script>\n<script src="./support.js"></script>');
   h = h.replace(/<link rel="preconnect"[^>]*>\s*/g, "").replace(/<link href="https:\/\/fonts.googleapis[^>]*>\s*/, "");
   const patch = fs.readFileSync(patchRef, "utf8");
   const i = h.indexOf("data-dc-script");
