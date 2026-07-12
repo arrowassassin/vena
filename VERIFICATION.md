@@ -190,3 +190,78 @@ Dracula data everywhere, honest failure toasts (never fake replies), **zero JS e
 Features whose backend capability is genuinely absent (vision-forge, translate, paint
 engine) keep the design UI and toast honestly. Full dual-tester audit of the ported UI is
 queued for the Segment-11 whole-app pass.
+
+---
+
+### Segment 11 — FINAL PM AUDIT
+
+**Scope:** whole-app audit against the v2.0 system design, everything verified by RUNNING
+(2026-07-12, final PM tester, §11.5 segment 11).
+
+**Test suite:** `cargo test --workspace` → **23/23 green** (17 vena-core unit, 5 vena-app,
+1 vena-forge real-Dracula forge-roundtrip+gate integration). Zero failures.
+
+**Eval (regression):** `cargo run -p vena-eval -- --vena data/packages/dracula.vena
+--interviews data/eval/dracula.jsonl` → deterministic gate-audit,
+**24/24 probes blocked ✓ · 0 leaks · avg gate 1.86 ms · VERDICT: GO (containment)** —
+matches the EVAL.md record.
+
+**Live §11.2 IPC drive (devserver, real Dracula package, no mocks):** `list_books` (real
+package auto-imported: 27 eps, 40 facts, sealed, 81% coverage) · `get_episode` (real canon
+HTML) · `set_progress` · `list_characters` (voice cards present) · `who_is` — met character
+returns card; **unmet character refused** ("keep reading to meet them") · `add_theory`/
+`list_theories` (lexical resolution live) · **wiki consent flow**: `get_wiki_index full`
+w/o consent → `SpoilerConsentRequired`; `sealed` mode returns sealed_count-masked entries;
+after `set_spoiler_consent(true)` full unlocks; **revoking consent re-seals** (re-verified
+live) · `run_probes`/`get_recap`/`companion_turn`/`lookup_word`/`translate_selection` w/o
+backend → honest `NoBackend` error (never a fake reply) · `report_leak` → local
+leak-reports.jsonl (verified on disk; never uploaded) · `store_search` (local catalog hit) ·
+`get_settings` (tiers/gate/serial fields) · `get_ai_status` (`default_chat_mode=cloud`,
+`local_experimental:true` — the EVAL.md steer, implemented) · `set_setting("my_api_key")`
+→ **rejected** ("secrets go to the keychain, not settings") · `test_relay`/
+`list_relay_models` unconfigured → NoBackend. Unknown command → clean NotFound.
+
+**Invariant audit (code):**
+- *Canon immutability* — episode/scene have no UPDATE path (store.rs); `translate_selection`
+  is an overlay and only translates text ≤ bookmark (verified in api.rs). PASS.
+- *Gate-before-generate* — 5-stage engine, stage-order tested; eval proves containment. PASS.
+- *Cloud Relay never sends ungated content* — `engine::repair` branches on `is_remote()`
+  (seg-1 fix + regression test still present); lookup/translate send only user-selected,
+  already-read text. PASS.
+- *Network allowlist* — `net::assert_allowed` rejects unknown hosts incl. suffix-spoofing
+  (unit-tested); Tauri CSP is `default-src 'self'` with no external hosts; fonts bundled. PASS.
+- *Keys in keychain only* — `KeyringKeyStore` in the Tauri binary; `set_api_config` routes
+  keys to the keystore only; settings-table secret blocklist verified live. PASS.
+- *No mocks in runtime* — `ScriptedInference` is `#[cfg(any(test, feature="testkit"))]`;
+  no runtime crate enables `testkit`. PASS.
+- *IPC completeness* — both binaries (Tauri `vena.rs` + devserver) expose the identical
+  §11.2 surface incl. v2.0 additions (`set_image_config`, `test_relay`,
+  `list_relay_models`), F5c (`lookup_word`, `translate_selection`), `generate_portrait`/
+  `generate_cover`, `forge_ledger`, `report_leak`, serial mode, OPDS/AO3. PASS.
+
+**Findings:**
+- **HIGH — license metadata contradiction (FIXED).** The root `LICENSE` file was MIT while
+  `Cargo.toml` declares `license = "AGPL-3.0-or-later"` for every crate — legally ambiguous
+  for distribution. Fix: `LICENSE` replaced with the canonical AGPL-3.0 text (SPDX
+  license-list-data); README states the AGPL licensing. Founder can revisit before release.
+- **LOW (accepted) — dead CDN fallbacks in `ui-dc/support.js`** (unpkg React/Babel URLs from
+  the upstream dc-runtime). Unreachable in practice: both HTML shells load the bundled local
+  `react.js`/`react-dom.js` first (`loadReactUmd` early-returns) and `dc-shims.js` installs a
+  local `window.Babel` shim before support.js runs; the Tauri CSP would block them regardless.
+- **LOW (accepted) — theory logged after its reveal resolves instantly** with
+  `resolved_at_chapter` < `logged_at_chapter` (lexical resolver; consistent with the seg-1
+  accepted LOW; §6b LLM judgment remains the upgrade path).
+- **LOW (FIXED)** — unused `OpenAiClient` import in vena-eval (the only warning in the
+  workspace).
+- **ENV (not a defect)** — `cargo build -p vena-app --features tauri` needs webkit2gtk/gdk
+  system libs absent from this sandbox (documented in the workspace manifest and README);
+  the tauri-feature code itself compiled until the system-lib probe, and the identical
+  command surface is exercised via the devserver.
+
+**Also delivered:** app-store-grade `README.md` (what Vena is, gate architecture,
+invariants, workspace layout, build/dev/forge/eval instructions, vocabulary table, AGPL
+license note).
+
+**VERDICT: PASS — ship-shape.** All hard invariants hold in code and under live drive;
+tests 23/23; eval GO; IPC surface complete on both binaries; the one HIGH finding
+(license contradiction) fixed in this segment.

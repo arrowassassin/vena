@@ -15,7 +15,7 @@ use clap::Parser;
 use std::io::Write;
 use std::path::PathBuf;
 use vena_core::engine::Engine;
-use vena_core::inference::{Inference, OpenAiClient};
+use vena_core::inference::Inference;
 use vena_core::pkg;
 use vena_core::store::Store;
 use vena_core::GateMode;
