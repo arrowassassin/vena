@@ -2342,6 +2342,9 @@ class Component extends DCLogic {
     if (this._forge) { clearInterval(this._forge); this._forge = null; }
     var self = this;
     this._legacyIds = {};
+    // demo-state honesty: no fake serial countdown (no pacing engine exists),
+    // no prefilled margin note from a chapter the reader never opened
+    this.setState({ tglSerial: false, notes: [] });
     this._offVena = V.onEvent(function (ev) { self._onVenaEvent(ev); });
     this._hydrate();
   };
@@ -2534,7 +2537,9 @@ class Component extends DCLogic {
       var div = document.createElement("div");
       div.innerHTML = ep.content_html || "";
       var ps = Array.prototype.map.call(div.querySelectorAll("p"), function (p) {
-        return (p.textContent || "").replace(/\s+/g, " ").trim();
+        // strip raw emphasis underscores / em-dash digraphs the plain-text
+        // extraction leaves behind (matches the desktop reader's cleaning)
+        return (p.textContent || "").replace(/_/g, "").replace(/--/g, "—").replace(/\s+/g, " ").trim();
       }).filter(function (t) { return t.length > 1; });
       if (ps.length) {
         self._readerPs = ps;
@@ -2802,6 +2807,60 @@ class Component extends DCLogic {
   P.componentDidUpdate = function (prev) {
     origDidUpdate && origDidUpdate.call(this, prev);
     this._applyReaderText();
+    this._applyDesignFacts();
+  };
+
+  // -------------------------------------------- static demo copy → real data
+  // A few plates in the canonical template are hardcoded showcase HTML with no
+  // bindings (the theory flip card, the WHO'S WHO tally, the reader kicker).
+  // Their text nodes are rewritten from REAL data after each render — the same
+  // reconciliation-safe technique as the reader text.
+  P._applyDesignFacts = function () {
+    var self = this;
+    var ch = this._chNow();
+    var els = document.querySelectorAll("span, div");
+    var orig = function (el) { if (el.__vOrig == null) el.__vOrig = el.textContent; return el.__vOrig; };
+    var put = function (el, txt) { if (el.__vTxt !== txt) { el.__vTxt = txt; el.textContent = txt; } };
+    Array.prototype.forEach.call(els, function (el) {
+      // reader kicker (has an <em> child) → the real episode's own heading
+      if (el.children.length) {
+        var f = el.firstChild;
+        if (el.__vKick || (f && f.nodeType === 3 && f.nodeValue.indexOf("DR. SEWARD") === 0)) {
+          el.__vKick = true;
+          var ep = self._episode;
+          if (ep && ep.title && f && f.nodeType === 3) {
+            var want = String(ep.title).toUpperCase() + " — ";
+            if (f.nodeValue !== want) f.nodeValue = want;
+          }
+        }
+        return;
+      }
+      var o = orig(el);
+      // theory flip card → the first ledger-CONFIRMED theory, or hidden
+      if (o === "REVEAL REACHED!!" && el.tagName === "SPAN") {
+        var card = el.parentElement;
+        while (card && (card.getAttribute("style") || "").indexOf("perspective") === -1) card = card.parentElement;
+        if (!card) return;
+        var th = (self.baseTheories || []).filter(function (t) { return t.status === "CONFIRMED"; })[0];
+        card.style.display = th ? "" : "none";
+        if (!th) return;
+        Array.prototype.forEach.call(card.querySelectorAll("span, div"), function (c) {
+          if (c.children.length) return;
+          var co = orig(c);
+          if (/^PINNED CH\./.test(co)) put(c, "PINNED CH." + th.logged);
+          else if (/ran aground are connected/.test(co)) put(c, "“" + th.text + "”");
+          else if (/^RESOLVED · CHAPTER/.test(co)) put(c, "RESOLVED · CHAPTER " + (th.at || th.logged));
+          else if (/^The pieces met in Chapter/.test(co)) put(c, "The story caught up at Chapter " + (th.at || th.logged) + " — confirmed by the ledger, never by guesswork.");
+        });
+        return;
+      }
+      // WHO'S WHO tally → real cast/terms counts at the current horizon
+      if (o === "13 ENTRIES · 4 SEALED") {
+        var entries = (self.whoPeople || []).length + (self.whoPlaces || []).length;
+        var sealed = (self.fullCast || []).filter(function (c) { return c.metCh > ch; }).length;
+        if (entries) put(el, entries + " ENTRIES · " + sealed + " SEALED");
+      }
+    });
   };
   P._applyReaderText = function () {
     if (this.state.screen !== "reader" || !this._readerPs || !this._readerPs.length) return;
@@ -3132,6 +3191,9 @@ class Component extends DCLogic {
       self.setState({ tglReseal: nv });
       setKV("reseal_on_reread", nv ? "1" : "0");
     };
+    // serial pacing has no engine behind it — the toggle refuses honestly
+    // instead of showing a fabricated countdown/streak in the reader
+    v.serialTgl = function () { self._toast("SERIAL PACING ISN’T WIRED IN THIS BUILD — EVERY CHAPTER IS OPEN"); };
     var origTheme = v.themeToggle;
     v.themeToggle = function () {
       origTheme();

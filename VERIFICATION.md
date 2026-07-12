@@ -265,3 +265,82 @@ license note).
 **VERDICT: PASS — ship-shape.** All hard invariants hold in code and under live drive;
 tests 23/23; eval GO; IPC surface complete on both binaries; the one HIGH finding
 (license contradiction) fixed in this segment.
+
+### Segment 11 — FINAL UX AUDIT (whole-app, canonical ui-dc on the real engine)
+
+**Method.** Both surfaces (`desktop.html` 1440×900, `mobile.html` 390×844) driven live in
+Chromium/Playwright against the real devserver (`VENA_DATA_DIR` fresh, real Dracula package,
+no mocks). To exercise the full 5-stage pipeline for real, a local OpenAI-compatible stub
+relay (scratchpad `stub-relay.mjs`, 127.0.0.1:8099) was registered through the app's own
+relay-config UI — every reply on screen came out of the real gate→compose→verify→repair
+engine. ~70 scripted assertions + screenshot review across every screen; zero page errors
+throughout.
+
+**Verified end-to-end on real data:** shelf/stats/SHA per book; forging (real `forge_ledger`
+re-forge: FORGING… badge + progress via `forge:progress`, honest rollback to sealed when the
+backend fails); engine stamps GATE ≤ CH.n → COMPOSE → VERIFY live off `companion:stage`, and
+INKING OUT A SPOILER on the repair stage; INKED OUT! strike notice on redacted replies;
+silhouettes (2 MET · 8 STILL INK at ch1 → 10 MET · 0 STILL INK at ch27, engine `met` flag);
+recap (real `get_recap`, typed out); theory pin → CALLED IT/BUSTED flips only from backend
+resolution; reader = real chapter text (drop cap, TOC, jump-back "RE-SEALED TO CH.n"),
+MARK CH. READ moves the horizon and reloads cast/theories/wiki; archive consent gate
+(two-step arm → SPOIL ME — UNSEAL IT ALL → real `set_spoiler_consent`), unsealed banner +
+RE-SEAL IT (backend consent verified revoked after re-seal); THAT SPOILED ME → taxonomy
+chips → real `report_leak` (leak-reports.jsonl written); Test the Gate = real `run_probes`
+(12/12 blocked); tier rows from the real catalog (INK·3B 1.9 GB / QUILL·7B 4.6 GB /
+ARCHIVIST·13B TOO BIG); relay config → FETCH MODELS → TEST THE RELAY all real; burn modal;
+store honest offline toasts; vocabulary sweep clean on all six screens (no
+undefined/NaN/generic error copy).
+
+**Findings & resolutions:**
+- **HIGH — redaction left unmet-character spoilers in the reply (engine, FIXED).**
+  `engine::redact` dropped sentences by similarity to violating *claims*, but
+  `unmet_character` violations are synthetic claims ("names unmet character: X") that never
+  text-match the leaking sentence — a double-leaking backend produced `redacted: true` with
+  the spoiler verbatim in the reply while the UI stamped it INKED OUT!. Fixed in
+  `vena-core/src/engine.rs` (redact now scrubs any sentence naming a leaked unmet character)
+  + regression test `redaction_strips_unmet_character_names`. Re-verified live: the reply
+  carries only the in-character deflection. (Committed in 0d8d7af by the concurrent PM
+  session as WIP; validated here.)
+- **HIGH — hardcoded demo theory flip-card on real data (both surfaces, FIXED).** The
+  design's showcase card ("Lucy's illness and the ship that ran aground are connected",
+  REVEAL REACHED!!, back face naming Van Helsing) is unbound template HTML — it rendered a
+  never-pinned theory and named UNMET characters at CH.1. Fixed in both patches via the
+  established reconciliation-safe text-node pass: the card is driven by the first
+  ledger-CONFIRMED real theory (front text, PINNED CH.x, RESOLVED · CHAPTER y, honest back
+  copy) and hidden entirely when none exists. Markup/CSS untouched.
+- **HIGH — fake serial countdown hid the real MARK READ control (both surfaces, FIXED).**
+  `tglSerial` defaults ON in the design, so the reader showed "NEXT EPISODE UNLOCKS IN 14H"
+  + "STREAK ×6 NIGHTS" (no pacing engine exists) instead of MARK CH. READ. Fixed: serial
+  defaults OFF; the SERIAL MODE toggle refuses honestly ("SERIAL PACING ISN'T WIRED IN THIS
+  BUILD — EVERY CHAPTER IS OPEN").
+- **MED — DATA & PRIVACY footer showed demo ledger stats (desktop, FIXED):** hardcoded
+  "SHA A3F2…C9 · 1,483 FACTS · COVERAGE 96%" → real book meta (SHA F4D4…76 · 40 FACTS ·
+  COVERAGE 81%).
+- **MED — desktop Test-the-Gate result lacked the leak taxonomy (FIXED):** now
+  "N/N FUTURE PROBES BLOCKED ✓ · 0 LEAKS · FUTURE EVENT n · UNMET CHARACTER n · TONE n ·
+  AVG GATE x.xxS", identical shape to mobile (real `leak_kind` tallies).
+- **MED — WHO'S WHO tally hardcoded "13 ENTRIES · 4 SEALED" (both, FIXED):** real synced
+  wiki index counts (desktop) / met-cast+terms vs sealed-cast counts (mobile).
+- **MED — reader kicker misattributed the chapter (both, FIXED):** static "DR. SEWARD'S
+  DIARY — continued" over Jonathan Harker's Ch. I journal → real episode title.
+- **MED — mobile reader showed raw markup (FIXED):** underscores/`--` digraphs now cleaned
+  like the desktop reader ("Bistritz.—Left Munich…").
+- **MED — prefilled demo margin note (both, FIXED):** the CH.XII garlic note (a tone
+  spoiler at ch1) no longer ships; notes start empty.
+- **LOW (accepted):** desktop replies land whole after real stamps while mobile types them
+  out (mobile design's own effect; desktop timing is the honest one); COMICS & MANGA demo
+  shelf plate + vision-forge panel stay as design showcases with honest toasts (no CBZ/OCR
+  backend); store rails rely on transient toasts when the network is blocked; theme choice
+  persists only per-session (`set_setting('theme')` is write-only — `get_settings` has no
+  theme field); chat splash on mobile renders on the design's tall canvas (verbatim design).
+
+**Re-verification after fixes:** full fix-suite green on both surfaces (flip card real or
+hidden, MARK CH. III READ →, honest serial refusal, real ledger footer, taxonomy probe
+string, cleaned mobile text, real kicker), workspace tests 24/24 (incl. the new redaction
+regression), zero page errors.
+
+**VERDICT: PASS after fixes.** The canonical design runs verbatim on the real engine on
+both surfaces; every audited interaction state is backed by real data; failure states are
+honest everywhere (NoBackend, unreachable stores, absent translate/paint/vision/serial
+capabilities all refuse in voice — no fake replies anywhere).

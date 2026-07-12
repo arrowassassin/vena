@@ -2796,6 +2796,7 @@ class Component extends DCLogic {
   P.componentDidUpdate = function (pp) {
     _didUpdate && _didUpdate.call(this, pp);
     this._venaReaderText();
+    this._venaDesignFacts();
   };
 
   P._venaInit = function () {
@@ -2812,7 +2813,9 @@ class Component extends DCLogic {
       wikiIdx: null, episode: null, forge: {}, storeOffline: false
     };
     this._turnSeq = 0;
-    this.setState({ book: '', catalogs: [] });
+    // demo-state honesty: no fake serial countdown (no pacing engine exists),
+    // no prefilled margin note from a chapter the reader never opened
+    this.setState({ book: '', catalogs: [], tglSerial: false, notes: [] });
     if (!V) { this._toast('VENA BRIDGE MISSING — NO BACKEND ON THIS PAGE'); return; }
     this._venaUnsub = V.onEvent(e => this._venaEvent(e));
 
@@ -3281,6 +3284,72 @@ class Component extends DCLogic {
     });
   };
 
+  /* ---------------- static demo copy → real ledger data ----------------
+   * A few plates in the canonical template are hardcoded showcase HTML with
+   * no bindings (the theory flip card, the DATA & PRIVACY ledger line, the
+   * WHO'S WHO tally, the reader kicker). Their text nodes are rewritten from
+   * REAL data after each render — same reconciliation-safe technique as the
+   * reader text; the design's markup and styling are never altered.
+   */
+  P._venaDesignFacts = function () {
+    const D = this._vena;
+    if (!D) return;
+    const meta = this._curBookMeta();
+    const els = Array.prototype.slice.call(document.querySelectorAll('span, div'));
+    const orig = el => (el.__vOrig != null ? el.__vOrig : (el.__vOrig = el.textContent));
+    const put = (el, txt) => { if (el.__vTxt !== txt) { el.__vTxt = txt; el.textContent = txt; } };
+
+    els.forEach(el => {
+      /* reader kicker (has an <em> child) → the real episode's own heading */
+      if (el.children.length) {
+        const f = el.firstChild;
+        if (el.__vKick || (f && f.nodeType === 3 && f.nodeValue.indexOf('DR. SEWARD') === 0)) {
+          el.__vKick = true;
+          const ep = D.episode;
+          if (ep && ep.title && f && f.nodeType === 3) {
+            const want = UP(ep.title) + ' — ';
+            if (f.nodeValue !== want) f.nodeValue = want;
+          }
+        }
+        return;
+      }
+      const o = orig(el);
+
+      /* theory flip card → the first ledger-CONFIRMED theory, or hidden */
+      if (o === 'REVEAL REACHED!!' && el.tagName === 'SPAN') {
+        let card = el.parentElement;
+        while (card && (card.getAttribute('style') || '').indexOf('perspective') === -1) card = card.parentElement;
+        if (!card) return;
+        const th = (D.theories || []).find(t => t.resolved_status === 'confirmed');
+        card.style.display = th ? '' : 'none';
+        if (!th) return;
+        Array.prototype.forEach.call(card.querySelectorAll('span, div'), c => {
+          if (c.children.length) return;
+          const co = orig(c);
+          if (/^PINNED CH\./.test(co)) put(c, 'PINNED CH.' + this.roman(th.logged_at_chapter || 1));
+          else if (/ran aground are connected/.test(co)) put(c, '“' + th.text + '”');
+          else if (/^RESOLVED · CHAPTER/.test(co)) put(c, 'RESOLVED · CHAPTER ' + this.roman(th.resolved_at_chapter || th.logged_at_chapter || 1));
+          else if (/^The pieces met in Chapter/.test(co)) put(c, 'The story caught up at Chapter ' + this.roman(th.resolved_at_chapter || th.logged_at_chapter || 1) + ' — confirmed by the ledger, never by guesswork.');
+        });
+        return;
+      }
+
+      /* DATA & PRIVACY ledger line → the real book's numbers */
+      if (/^LEDGER SHA A3F2/.test(o)) {
+        put(el, meta
+          ? 'LEDGER SHA ' + shaShort(meta.package_sha) + ' · ' + meta.fact_count + ' FACTS · COVERAGE ' + Math.round((meta.ledger_coverage || 0) * 100) + '%'
+          : 'NO BOOK OPEN');
+        return;
+      }
+
+      /* WHO'S WHO tally → the real synced index */
+      if (o === '13 ENTRIES · 4 SEALED') {
+        const idx = D.wikiIdx;
+        if (idx) put(el, (idx.entries || []).length + ' ENTRIES · ' + (idx.sealed_total || 0) + ' SEALED');
+      }
+    });
+  };
+
   /* =================================================================
    *  _venaTail — the renderVals tail (everything past the truncation),
    *  rebuilt in the design's exact shapes, on REAL data.
@@ -3500,16 +3569,25 @@ class Component extends DCLogic {
       }
     }));
 
-    /* gate probes — the real run_probes(bookId, 12) */
+    /* gate probes — the real run_probes(bookId, 12), leak-taxonomy tallied */
     const gateTest = () => {
       if (st.gateState === 'running' || !meta) return;
       this.setState({ gateState: 'running', gateResult: '' });
+      const t0 = Date.now();
       V.call('run_probes', { bookId: meta.id, n: 12 }).then(rs => {
         const n = (rs || []).length;
-        const leaks = (rs || []).filter(r => r.leaked).length;
+        const leaks = (rs || []).filter(r => r.leaked);
+        const kinds = { future_event: 0, unmet_character: 0, tone_implies_ending: 0 };
+        leaks.forEach(l => { if (l.leak_kind && kinds[l.leak_kind] != null) kinds[l.leak_kind]++; });
+        const avg = n ? ((Date.now() - t0) / n / 1000).toFixed(2) : '0.00';
         this.setState({
           gateState: 'idle',
-          gateResult: (n - leaks) + '/' + n + ' FUTURE PROBES BLOCKED ✓ · ' + leaks + ' LEAKS'
+          gateResult: (n - leaks.length) + '/' + n + ' FUTURE PROBES BLOCKED '
+            + (leaks.length ? '· ' + leaks.length + ' LEAKED' : '✓ · 0 LEAKS')
+            + ' · FUTURE EVENT ' + kinds.future_event
+            + ' · UNMET CHARACTER ' + kinds.unmet_character
+            + ' · TONE ' + kinds.tone_implies_ending
+            + ' · AVG GATE ' + avg + 'S'
         });
       }).catch(e => {
         this.setState({ gateState: 'idle', gateResult: '' });
@@ -3905,6 +3983,10 @@ class Component extends DCLogic {
         } catch (err) { this._toast('EXPORT FAILED'); }
       },
       wipeBook: () => { if (ab) this.setState({ delModal: ab.id }); },
+
+      /* serial pacing has no engine behind it — the toggle refuses honestly
+         instead of showing a fabricated countdown/streak in the reader */
+      serialTgl: () => this._toast('SERIAL PACING ISN’T WIRED IN THIS BUILD — EVERY CHAPTER IS OPEN'),
 
       recapTglBg: st.tglAutoRecap ? 'var(--ink)' : 'transparent',
       recapTglCol: st.tglAutoRecap ? 'var(--inv)' : 'var(--mut2)',
