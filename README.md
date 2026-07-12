@@ -133,6 +133,29 @@ The per-segment dual-tester audit trail is in [VERIFICATION.md](VERIFICATION.md)
 | **Paint Engine (EASEL·XL / SKETCH·1.5)** | Local image generation for covers/portraits |
 | **.vena** | The portable package format: canon + ledger + graph, user tables empty |
 | **serial mode** | Drip-feed release of episodes on a schedule you set |
+| **sync bundle** | A portable file (progress + theories + consent, no canon/chat) you move between your own devices — zero-server sync, last-writer-wins |
+| **share theories** | Export just a book's theories for a book club to import — no reading position leaked |
+
+## Sync & sharing (zero-server)
+
+Vena never runs a server, so sync and social both ride **portable files you move yourself**
+(AirDrop, email, a shared Dropbox/iCloud/Syncthing folder):
+
+- **Export/Import my data** — a `sync` bundle carries your progress, theories, and
+  spoiler-consent (never canon, ledger, or chat text). Import on another device that has
+  the same book and it merges: progress last-writer-wins, theories union-deduped.
+- **Share theories** — a `theories`-scope bundle for book clubs; it carries no reading
+  position, so sharing your predictions never reveals how far you've read.
+- **Forget our conversations** — wipe a book's chat + memory while keeping the book,
+  ledger, progress, and theories.
+
+One-tap **Cloud Relay** setup: pick a provider (OpenRouter / Groq / Together, or local
+Ollama / LM Studio), paste a key (none needed for local), and it configures + tests in a
+single step. The ledger gate always runs locally first — the relay only ever receives
+gated context.
+
+The forge is **incremental**: facts commit chapter-by-chapter, so the companion is usable
+for the chapters you've read while the rest of the book is still forging.
 
 ## License
 

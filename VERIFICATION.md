@@ -344,3 +344,27 @@ regression), zero page errors.
 both surfaces; every audited interaction state is backed by real data; failure states are
 honest everywhere (NoBackend, unreachable stores, absent translate/paint/vision/serial
 capabilities all refuse in voice — no fake replies anywhere).
+
+---
+
+## Post-launch — research-driven feature additions (PM-led)
+
+A deep-research pass (105-agent workflow, 3-vote adversarial verification) confirmed the
+engine architecture is academically sound (TimeChara, RoleFact, "Living the Novel") and
+demand for character-chat is proven, but flagged three threats: Amazon "Ask This Book"
+shipping progress-gated spoiler-free Q&A (thin moat), author copyright backlash, and
+impractical on-device mobile LLMs. The response shifts the wedge to Vena's defensible axes
+(local-first, BYO-book, privacy, theory board) and closes the highest-leverage gaps:
+
+- **Streaming/incremental forge** — facts commit chapter-by-chapter; the per-fact gate
+  makes early chapters chattable while later ones forge. `forge:progress.forgedThrough`
+  drives an honest "companion ready through ch.N" UI. (Kills the first-run forge wait.)
+- **One-tap Cloud Relay** — curated provider presets (OpenRouter/Groq/Together/Ollama/
+  LM Studio) + `configure_relay` (fill+persist+test in one call). Makes BYO-key the
+  frictionless happy path around weak mobile local models.
+- **Portable data layer** — `export_bundle`/`import_bundle` (progress+theories+consent,
+  no canon/chat; sync + book-club scopes) + `forget_conversations`. Zero-server
+  cross-device sync AND the Amazon-proof shareable theory board, both as portable files.
+
+All backend commands wired through both transports (dispatch_parity guard), unit- and
+live-verified; UI surfaced in both desktop and mobile patches. Test count 28 → 33.
