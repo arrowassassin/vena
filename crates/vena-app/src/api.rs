@@ -141,21 +141,22 @@ impl AppApi {
         store.conn_execute_set_cover(book_id, &path.to_string_lossy())
     }
 
-    /// Import the bundled flagship Dracula package once, so the shelf is never empty.
+    /// Seed the bundled reference books. Each seed is checked INDEPENDENTLY — an
+    /// early return keyed on Dracula alone meant a profile that already had Dracula
+    /// never picked up newly-added bundled comics (e.g. a fetch-nemo.sh CBZ) on
+    /// later launches.
     fn seed_first_run(&self) -> Result<()> {
-        let store = self.store();
-        let already = store
+        let has_dracula = self
+            .store()
             .list_books()?
             .iter()
             .any(|b| b.slug.starts_with("dracula"));
-        if already {
-            return Ok(());
-        }
-        drop(store);
-        for candidate in bundled_packages() {
-            if candidate.exists() {
-                let _ = vena_core::pkg::import_vena(&self.store(), &candidate)?;
-                break;
+        if !has_dracula {
+            for candidate in bundled_packages() {
+                if candidate.exists() {
+                    let _ = vena_core::pkg::import_vena(&self.store(), &candidate)?;
+                    break;
+                }
             }
         }
         // Also seed any bundled comics (.cbz) — e.g. the sample comic, or a
