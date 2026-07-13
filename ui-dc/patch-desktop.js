@@ -95,6 +95,7 @@
     this._venaDesignFacts();
     this._venaDataPrivacy();
     this._venaMangaDom();
+    this._venaComicsShelfDom();
   };
 
   P._venaInit = function () {
@@ -597,8 +598,26 @@
     }).catch(e => { M.pending[n] = false; this._honest('PAGE ' + n, e); });
   };
 
+  // zoom steps for the page view — 100% means "fit the available space"
+  const MG_ZOOMS = [1, 1.25, 1.5, 2, 2.5, 3];
+
+  P._mangaZoomSet = function (z) {
+    this._mangaZoom = z;
+    if (z <= 1) this._mangaPan = { x: 0, y: 0 };
+    this._venaMangaDom();
+  };
+
   P._venaMangaDom = function () {
-    if (!this.state.mangaOpen) return;
+    if (!this.state.mangaOpen) {
+      // leaving the viewer resets zoom/pan so the next open starts at FIT
+      if (this._mangaWasOpen) { this._mangaWasOpen = false; this._mangaZoom = 1; this._mangaPan = { x: 0, y: 0 }; }
+      return;
+    }
+    this._mangaWasOpen = true;
+    if (!this._mangaResize) {
+      this._mangaResize = true;
+      window.addEventListener('resize', () => this._venaMangaDom());
+    }
     // the viewer can open from ANY path (demo showcase card, a shelf comic
     // card, restored state) — resolve the real comic whenever it is open
     if (!this._manga && !this._mangaLoading) this._loadManga();
@@ -611,22 +630,29 @@
       if (el.tagName === 'SPAN' && el.__vMgO.indexOf('LITTLE NEMO') === 0 && el.textContent !== M.title) {
         el.textContent = M.title;
       } else if (el.__vMgO.indexOf('PLACEHOLDER PAGES') === 0) {
-        const want = 'REAL CBZ · ' + M.count + ' PAGES FROM YOUR FILE · TAP A BUBBLE → DICTIONARY · TRANSLATE · ASK THE CAST';
+        const want = 'REAL CBZ · ' + M.count + ' PAGES FROM YOUR FILE · ⊖/⊕ OR DOUBLE-CLICK TO ZOOM · DRAG TO PAN';
         if (el.textContent !== want) el.textContent = want;
       }
     });
-    if (!M) return; // prose: the design's demo view stays untouched
+    if (!M) { this._mangaZoomBtns(false); return; } // prose: the design's demo view stays untouched
+    const z = this._mangaZoom || 1;
+    const pan = this._mangaPan || (this._mangaPan = { x: 0, y: 0 });
     // page panels: the stroke "P.N" spans mark each page plate
+    const plates = [];
     spans.forEach(el => {
       if (el.tagName !== 'SPAN' || !/^P\.\d+$/.test(el.textContent || '')) return;
       const n = +((el.textContent || '').slice(2));
       const panel = el.parentElement;
       if (!panel) return;
+      // pages-mode plates are sized by height, vertical-flow plates by width —
+      // remember which before the fit pass overwrites the inline style
+      if (!panel.__vMgMode) panel.__vMgMode = panel.style.height === '100%' ? 'pages' : 'scroll';
       let img = panel.querySelector('img[data-vena-manga]');
       if (!img) {
         img = document.createElement('img');
         img.setAttribute('data-vena-manga', '1');
         img.style.cssText = 'position:absolute;inset:0;width:100%;height:100%;object-fit:contain;display:none;image-rendering:pixelated';
+        img.addEventListener('load', () => this._venaMangaDom()); // refit once real dimensions exist
         panel.appendChild(img);
       }
       img.alt = 'Comic page ' + n;
@@ -642,7 +668,234 @@
         el.style.visibility = 'visible'; // the page number doubles as the loading mark
         if (n >= 1 && n <= M.count) this._fetchMangaPage(n);
       }
+      plates.push({ panel, img });
     });
+
+    /* fit-to-space: each plate takes the page's REAL aspect ratio and fills
+       the viewer — no 2:3 letterbox bars, no dead margins */
+    const pages = plates.filter(p => p.panel.__vMgMode === 'pages');
+    if (pages.length) {
+      const area = pages[0].panel.parentElement;
+      this._mangaArea(area, pages.map(p => p.panel));
+      const availH = area.clientHeight - 20;
+      let availW = area.clientWidth - 28;
+      Array.prototype.forEach.call(area.children, c => {
+        if (c.tagName === 'BUTTON') availW -= c.offsetWidth + 6;
+      });
+      availW = Math.max(120, (availW - 6 * (pages.length - 1)) / pages.length);
+      pages.forEach((p, i) => {
+        const st = p.panel.style;
+        if (p.img.naturalWidth > 0 && p.img.style.display === 'block') {
+          const k = Math.min(availW / p.img.naturalWidth, availH / p.img.naturalHeight);
+          st.width = Math.max(80, Math.floor(p.img.naturalWidth * k) - 6) + 'px';
+          st.height = Math.max(80, Math.floor(p.img.naturalHeight * k) - 6) + 'px';
+          st.maxWidth = 'none';
+          st.aspectRatio = 'auto';
+        }
+        // a spread zooms out from the spine; a single page from its center
+        st.transformOrigin = pages.length > 1 ? (i === 0 ? '100% 50%' : '0% 50%') : '50% 50%';
+        st.transition = this._mangaDragging ? 'none' : 'transform .12s ease-out';
+        st.transform = 'translate(' + pan.x + 'px,' + pan.y + 'px) scale(' + z + ')';
+        st.zIndex = '1';
+        st.cursor = z > 1 ? (this._mangaDragging ? 'grabbing' : 'grab') : 'zoom-in';
+      });
+    }
+    plates.filter(p => p.panel.__vMgMode === 'scroll').forEach(p => {
+      const st = p.panel.style;
+      st.width = 'min(' + Math.round(z > 1 ? 480 * z : 640) + 'px, ' + (z > 1 ? 96 : 92) + '%)';
+      if (p.img.naturalWidth > 0 && p.img.style.display === 'block') st.aspectRatio = p.img.naturalWidth + ' / ' + p.img.naturalHeight;
+    });
+    this._mangaZoomBtns(true);
+  };
+
+  // one-time setup of the plate area: clipping, tighter padding, drag-to-pan
+  P._mangaArea = function (area, panels) {
+    area.__vMgPanels = panels;
+    if (area.__vMgArea) return;
+    area.__vMgArea = true;
+    area.style.overflow = 'hidden';
+    area.style.padding = '10px 14px';
+    area.style.touchAction = 'none';
+    // the ‹ › arrows must stay above a zoomed plate
+    Array.prototype.forEach.call(area.children, c => {
+      if (c.tagName === 'BUTTON') { c.style.position = 'relative'; c.style.zIndex = '2'; }
+    });
+    area.addEventListener('dblclick', e => {
+      if (e.target.tagName === 'BUTTON') return;
+      this._mangaZoomSet((this._mangaZoom || 1) > 1 ? 1 : 2);
+    });
+    area.addEventListener('pointerdown', e => {
+      const z = this._mangaZoom || 1;
+      if (z <= 1 || e.button !== 0 || e.target.tagName === 'BUTTON') return;
+      e.preventDefault();
+      const start = { x: e.clientX, y: e.clientY, px: this._mangaPan.x, py: this._mangaPan.y };
+      this._mangaDragging = true;
+      try { area.setPointerCapture(e.pointerId); } catch (_) {}
+      const move = ev => {
+        const ps = area.__vMgPanels || [];
+        const w = ps.reduce((a, p) => a + p.offsetWidth, 0);
+        const h = ps[0] ? ps[0].offsetHeight : 0;
+        const mx = Math.max(0, (w * z - area.clientWidth) / 2) + 60;
+        const my = Math.max(0, (h * z - area.clientHeight) / 2) + 60;
+        this._mangaPan = {
+          x: Math.max(-mx, Math.min(mx, start.px + ev.clientX - start.x)),
+          y: Math.max(-my, Math.min(my, start.py + ev.clientY - start.y))
+        };
+        ps.forEach(p => {
+          p.style.transition = 'none';
+          p.style.transform = 'translate(' + this._mangaPan.x + 'px,' + this._mangaPan.y + 'px) scale(' + z + ')';
+        });
+      };
+      const up = () => {
+        this._mangaDragging = false;
+        area.removeEventListener('pointermove', move);
+        area.removeEventListener('pointerup', up);
+        area.removeEventListener('pointercancel', up);
+        this._venaMangaDom();
+      };
+      area.addEventListener('pointermove', move);
+      area.addEventListener('pointerup', up);
+      area.addEventListener('pointercancel', up);
+    });
+  };
+
+  // ⊖ / % / ⊕ controls injected into the viewer header, real comics only
+  P._mangaZoomBtns = function (show) {
+    const btns = Array.prototype.slice.call(document.querySelectorAll('button'));
+    const close = btns.find(b => (b.textContent || '').indexOf('✕ CLOSE') >= 0
+      && /SPREAD|R → L|PAGES/.test((b.parentElement && b.parentElement.textContent) || ''));
+    if (!close) return;
+    let box = close.parentElement.querySelector('[data-vena-zoom]');
+    if (!box) {
+      const ref = Array.prototype.find.call(close.parentElement.querySelectorAll('button'),
+        b => /SPREAD|R → L|PAGES/.test(b.textContent || ''));
+      box = document.createElement('span');
+      box.setAttribute('data-vena-zoom', '1');
+      box.style.cssText = 'display:inline-flex;gap:8px;align-items:center';
+      const step = d => {
+        const cur = MG_ZOOMS.indexOf(this._mangaZoom || 1);
+        this._mangaZoomSet(MG_ZOOMS[Math.max(0, Math.min(MG_ZOOMS.length - 1, (cur < 0 ? 0 : cur) + d))]);
+      };
+      const mk = (label, title, fn) => {
+        const b = document.createElement('button');
+        b.textContent = label;
+        b.title = title;
+        b.style.cssText = ref ? ref.style.cssText
+          : "background:none;border:2px solid var(--ink);color:var(--ink);padding:6px 11px;font-family:'IBM Plex Mono',monospace;font-size:9px;letter-spacing:.08em;font-weight:600;cursor:pointer";
+        b.addEventListener('click', fn);
+        box.appendChild(b);
+        return b;
+      };
+      mk('⊖', 'Zoom out', () => step(-1));
+      box.__vLbl = mk('100%', 'Back to fit', () => this._mangaZoomSet(1));
+      mk('⊕', 'Zoom in', () => step(1));
+      close.parentElement.insertBefore(box, close);
+    }
+    box.style.display = show ? 'inline-flex' : 'none';
+    if (box.__vLbl) box.__vLbl.textContent = Math.round((this._mangaZoom || 1) * 100) + '%';
+  };
+
+  /* ---------------- Comics & Manga shelf: real comics bind the section ----
+   * The design ships ONE static Little Nemo row. Real comics (profile
+   * "comic") take it over: the first comic patches the row in place, each
+   * further comic gets a cloned row. Comics no longer render in the prose
+   * grid — this section IS their shelf. Zero comics keeps the demo row. */
+  P._venaComicsShelfDom = function () {
+    let head = null;
+    Array.prototype.forEach.call(document.querySelectorAll('span'), s => {
+      if (s.textContent === 'COMICS & MANGA') head = s;
+    });
+    if (!head || !head.parentElement) return;
+    const first = head.parentElement.nextElementSibling;
+    if (!first || !first.parentElement) return;
+    const host = first.parentElement;
+    const comics = (this.bookDefs || []).filter(d =>
+      (d.meta || {}).profile === 'comic' && !(this.state.deleted || {})[d.id]);
+    const clones = Array.prototype.slice.call(host.querySelectorAll('[data-vena-comic-row]'));
+    if (!comics.length) {
+      clones.forEach(c => c.remove());
+      if (first.__vCmBound) { first.__vCmBound = false; this._comicRowRestore(first); }
+      return;
+    }
+    while (clones.length < comics.length - 1) {
+      const c = first.cloneNode(true);
+      c.setAttribute('data-vena-comic-row', '1');
+      c.style.marginTop = '10px';
+      (clones[clones.length - 1] || first).after(c);
+      clones.push(c);
+    }
+    while (clones.length > comics.length - 1) clones.pop().remove();
+    first.__vCmBound = true;
+    this._comicRowBind(first, comics[0], false);
+    clones.forEach((row, i) => this._comicRowBind(row, comics[i + 1], true));
+  };
+
+  P._comicRowBind = function (row, def, isClone) {
+    const setTxt = (el, txt) => {
+      if (!el) return;
+      if (!isClone && el.__vCmO == null) el.__vCmO = el.textContent;
+      if (el.textContent !== txt) el.textContent = txt;
+    };
+    const tile = row.querySelector('div[style*="clip-path"]');
+    if (!tile) return;
+    if (!isClone && tile.__vCmBg == null) tile.__vCmBg = tile.style.background;
+    if (def.cover) tile.style.background = def.cover;
+    const tDivs = tile.querySelectorAll('div');
+    setTxt(tDivs[tDivs.length - 2], def.title);
+    setTxt(tDivs[tDivs.length - 1], 'CBZ · ' + def.total + ' PAGES');
+    const info = tile.nextElementSibling;
+    if (!info) return;
+    const chips = info.children[0] ? info.children[0].querySelectorAll('span') : [];
+    setTxt(chips[0], 'CBZ · ' + def.total + ' PAGES');
+    setTxt(chips[1], 'ON THIS DEVICE');
+    setTxt(info.children[1], def.title);
+    setTxt(info.children[2], def.author + ' · IMPORTED CBZ');
+    // clicks carry THIS comic (stopPropagation keeps the template's untargeted
+    // demo handler from also firing on the original row)
+    const openIt = holder => {
+      holder.__vCmDef = def;
+      if (holder.__vCmWired) return;
+      holder.__vCmWired = true;
+      holder.addEventListener('click', e => {
+        e.stopPropagation();
+        const d = holder.__vCmDef;
+        this.setState({ mangaOpen: true });
+        this._loadManga(d.meta);
+      });
+    };
+    openIt(tile);
+    const openBtn = info.querySelector('button');
+    if (!openBtn) return;
+    openIt(openBtn);
+    const btnRow = openBtn.parentElement;
+    let rm = btnRow.querySelector('[data-vena-comic-remove]');
+    if (!rm) {
+      rm = document.createElement('button');
+      rm.setAttribute('data-vena-comic-remove', '1');
+      rm.textContent = 'REMOVE ✕';
+      rm.style.cssText = "background:none;border:2px solid var(--mut2);color:var(--mut);padding:9px 13px;font-family:'IBM Plex Mono',monospace;font-size:9px;letter-spacing:.08em;font-weight:600;cursor:pointer";
+      rm.addEventListener('click', e => { e.stopPropagation(); this.setState({ delModal: rm.__vCmId }); });
+      btnRow.appendChild(rm);
+    }
+    rm.__vCmId = def.id;
+    if (isClone) {
+      // clones carry no React handlers — the vision-forge button gets a real one
+      Array.prototype.forEach.call(row.querySelectorAll('button'), b => {
+        if (/RUN VISION FORGE/.test(b.textContent || '') && !b.__vCmWired) {
+          b.__vCmWired = true;
+          b.addEventListener('click', () => this._visionRun());
+        }
+      });
+    }
+  };
+
+  P._comicRowRestore = function (row) {
+    Array.prototype.forEach.call(row.querySelectorAll('div,span'), el => {
+      if (el.__vCmO != null && el.textContent !== el.__vCmO) el.textContent = el.__vCmO;
+    });
+    const tile = row.querySelector('div[style*="clip-path"]');
+    if (tile && tile.__vCmBg != null) tile.style.background = tile.__vCmBg;
+    Array.prototype.forEach.call(row.querySelectorAll('[data-vena-comic-remove]'), b => b.remove());
   };
 
   /* vision forge: no backend command exists — keep the panel, stay honest */
@@ -1034,7 +1287,9 @@
         anim: 'none'
       };
     });
-    const books = defs.map(b => {
+    // comics live in the COMICS & MANGA section, not the prose grid
+    const comicDefs = defs.filter(d => (d.meta || {}).profile === 'comic');
+    const books = defs.filter(d => (d.meta || {}).profile !== 'comic').map(b => {
       const m = b.meta || {};
       const fsx = D.forge[m.id];
       const forging = b.status === 'forging' || !!fsx;
@@ -1072,16 +1327,6 @@
         goComp: openComp,
         del: () => this.setState({ delModal: b.id })
       };
-      // a comic card opens the manga page view wired to ITS bookId
-      if (m.profile === 'comic') {
-        const openManga = () => { this.setState({ mangaOpen: true }); this._loadManga(m); };
-        card.act = openManga;
-        card.goComp = openManga;
-        card.btnLabel = 'OPEN PAGE VIEW →';
-        card.btnBg = 'var(--ink)'; card.btnCol = 'var(--inv)';
-        card.btnShdw = '4px 4px 0 var(--red)';
-        card.btnCur = 'pointer'; card.btnOp = '1';
-      }
       return card;
     });
 
@@ -1549,8 +1794,9 @@
 
       /* library */
       books,
-      shelfMeta: books.length + ' BOOK' + (books.length === 1 ? '' : 'S') + ' · '
-        + books.filter(b => b.isForged).length + ' LEDGERS FORGED · YOUR BOOKS, YOUR DEVICE, NOTHING LEAVES IT',
+      shelfMeta: books.length + ' BOOK' + (books.length === 1 ? '' : 'S')
+        + (comicDefs.length ? ' · ' + comicDefs.length + ' COMIC' + (comicDefs.length === 1 ? '' : 'S') : '')
+        + ' · ' + books.filter(b => b.isForged).length + ' LEDGERS FORGED · YOUR BOOKS, YOUR DEVICE, NOTHING LEAVES IT',
       visionStart: () => this._visionRun(),
 
       /* comics: real pages when a comic is on the shelf, demo view otherwise */

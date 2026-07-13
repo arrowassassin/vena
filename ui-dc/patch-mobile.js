@@ -663,7 +663,10 @@
   };
 
   P._applyMangaPages = function () {
-    if (!this.state.mangaOpen) return;
+    if (!this.state.mangaOpen) {
+      this._mangaZoom = 1; // next open starts at fit
+      return;
+    }
     var self = this;
     // the viewer can open from ANY path (demo showcase card, a shelf comic
     // card, restored state) — resolve the real comic whenever it is open
@@ -676,10 +679,11 @@
       if (el.tagName === "SPAN" && el.__vMgO.indexOf("LITTLE NEMO") === 0 && el.textContent !== M.title) {
         el.textContent = M.title;
       } else if (el.__vMgO.indexOf("PLACEHOLDER PAGES") === 0) {
-        var want = "REAL CBZ · " + M.count + " PAGES FROM YOUR FILE · TAP A BUBBLE → DICTIONARY · TRANSLATE · ASK THE CAST";
+        var want = "REAL CBZ · " + M.count + " PAGES FROM YOUR FILE · ⊖/⊕ OR DOUBLE-TAP TO ZOOM";
         if (el.textContent !== want) el.textContent = want;
       }
     });
+    this._applyMangaZoomBtns(!!M);
     if (!M) return;
     Array.prototype.forEach.call(els, function (el) {
       if (el.tagName !== "SPAN" || !/^P\.\d+$/.test(el.textContent || "")) return;
@@ -706,7 +710,73 @@
         el.style.visibility = "visible"; // the page number doubles as the loading mark
         if (n >= 1 && n <= M.count) self._fetchMangaPage(n);
       }
+      // fit-to-page: the plate takes the scan's REAL aspect ratio (no 2:3
+      // letterbox bars), and the vertical strip zooms by widening the plate —
+      // panning is then plain scrolling
+      if (!img.__vFit) {
+        img.__vFit = true;
+        img.addEventListener("load", function () { self._applyMangaPages(); });
+      }
+      if (img.naturalWidth > 0 && img.style.display === "block") {
+        panel.style.aspectRatio = img.naturalWidth + " / " + img.naturalHeight;
+      }
+      var strip = panel.parentElement;
+      var scrollMode = strip && /vh-scroll/.test(strip.className || "");
+      if (scrollMode) {
+        var z = self._mangaZoom || 1;
+        panel.style.width = Math.round(92 * z) + "%";
+        strip.style.overflowX = z > 1 ? "auto" : "";
+        strip.style.alignItems = z > 1 ? "flex-start" : "center";
+        if (!panel.__vZoomWired) {
+          panel.__vZoomWired = true;
+          panel.addEventListener("dblclick", function () { self._mangaZoomStep((self._mangaZoom || 1) > 1 ? -9 : 1); });
+          panel.addEventListener("touchend", function (e) {
+            var now = Date.now();
+            if (now - (panel.__vLastTap || 0) < 320) {
+              e.preventDefault();
+              self._mangaZoomStep((self._mangaZoom || 1) > 1 ? -9 : 1);
+            }
+            panel.__vLastTap = now;
+          });
+        }
+      }
     });
+  };
+
+  // ⊖ / ⊕ zoom for the vertical strip (real comics only); -9 = back to fit
+  P._mangaZoomStep = function (d) {
+    var zs = [1, 1.5, 2, 3];
+    var i = zs.indexOf(this._mangaZoom || 1);
+    if (i < 0) i = 0;
+    this._mangaZoom = zs[d === -9 ? 0 : Math.max(0, Math.min(zs.length - 1, i + d))];
+    this._applyMangaPages();
+  };
+
+  P._applyMangaZoomBtns = function (show) {
+    if (!this.state.mangaOpen) return;
+    var self = this;
+    var close = null;
+    Array.prototype.forEach.call(document.querySelectorAll("button"), function (b) {
+      if ((b.textContent || "") === "✕" && b.parentElement && /P\./.test(b.parentElement.textContent || "")) close = b;
+    });
+    if (!close) return;
+    var box = close.parentElement.querySelector("[data-vena-zoom]");
+    if (!box) {
+      box = document.createElement("span");
+      box.setAttribute("data-vena-zoom", "1");
+      box.style.cssText = "display:inline-flex;gap:6px;align-items:center";
+      var mk = function (label, d) {
+        var b = document.createElement("button");
+        b.textContent = label;
+        b.style.cssText = "background:none;border:2px solid var(--ink);color:var(--ink);height:34px;width:34px;font-size:13px;font-weight:600;cursor:pointer;padding:0";
+        b.addEventListener("click", function () { self._mangaZoomStep(d); });
+        box.appendChild(b);
+      };
+      mk("⊖", -1);
+      mk("⊕", 1);
+      close.parentElement.insertBefore(box, close);
+    }
+    box.style.display = show ? "inline-flex" : "none";
   };
 
   // -------------------------------------------- real reader text (DOM swap)
