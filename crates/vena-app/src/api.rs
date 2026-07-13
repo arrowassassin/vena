@@ -151,11 +151,38 @@ impl AppApi {
         if already {
             return Ok(());
         }
+        drop(store);
         for candidate in bundled_packages() {
             if candidate.exists() {
-                drop(store);
                 let _ = vena_core::pkg::import_vena(&self.store(), &candidate)?;
-                return Ok(());
+                break;
+            }
+        }
+        // Also seed any bundled comics (.cbz) — e.g. the sample comic, or a
+        // user-fetched Little Nemo (scripts/fetch-nemo.sh drops it here).
+        for dir in bundled_packages()
+            .iter()
+            .filter_map(|p| p.parent().map(std::path::Path::to_path_buf))
+            .collect::<std::collections::BTreeSet<_>>()
+        {
+            let Ok(entries) = std::fs::read_dir(&dir) else {
+                continue;
+            };
+            for e in entries.flatten() {
+                let path = e.path();
+                if path.extension().and_then(|x| x.to_str()) == Some("cbz") {
+                    let stem_slug = vena_core::util::slugify(
+                        path.file_stem().and_then(|s| s.to_str()).unwrap_or(""),
+                    );
+                    let on_shelf = self
+                        .store()
+                        .list_books()?
+                        .iter()
+                        .any(|b| b.slug.starts_with(&stem_slug));
+                    if !on_shelf {
+                        let _ = self.import_book(&path.to_string_lossy(), |_, _| {});
+                    }
+                }
             }
         }
         Ok(())
