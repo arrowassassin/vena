@@ -1,5 +1,13 @@
 // Rebuild desktop.html / mobile.html from the canonical design + current patches.
 import fs from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+
+// Resolve everything relative to THIS script, not the process CWD, so the README's
+// `node ui-dc/build.mjs` (run from the repo root) works the same as running it from
+// inside ui-dc/.
+const HERE = path.dirname(fileURLToPath(import.meta.url));
+const DESIGN_DIR = path.join(HERE, "..", "docs", "design");
 
 // The canonical desktop design file is truncated at exactly 256 KiB — the cut
 // lands inside `renderVals()`, in the middle of the `wikiLead:` string of the
@@ -25,11 +33,11 @@ const TRUNCATION_EPILOGUE = `wikiLead: ''
 `;
 
 function build(src, out, patchRef) {
-  let h = fs.readFileSync(`../docs/design/${src}`, "utf8");
+  let h = fs.readFileSync(path.join(DESIGN_DIR, src), "utf8");
   h = h.replace('<script src="./support.js"></script>',
     '<link rel="stylesheet" href="./fonts/fonts.css">\n<script src="./react.js"></script>\n<script src="./react-dom.js"></script>\n<script src="./dc-shims.js"></script>\n<script src="./vena-bridge.js"></script>\n<script src="./support.js"></script>');
   h = h.replace(/<link rel="preconnect"[^>]*>\s*/g, "").replace(/<link href="https:\/\/fonts.googleapis[^>]*>\s*/, "");
-  const patch = fs.readFileSync(patchRef, "utf8");
+  const patch = fs.readFileSync(path.join(HERE, patchRef), "utf8");
   const marker = "\n\n/* ===== VENA REAL-API PATCH (build-appended) ===== */\n";
   const i = h.indexOf("data-dc-script");
   const close = h.indexOf("</script>", i);
@@ -41,7 +49,7 @@ function build(src, out, patchRef) {
   } else {
     h = h.slice(0, close) + marker + patch + "\n" + h.slice(close);
   }
-  fs.writeFileSync(out, h);
+  fs.writeFileSync(path.join(HERE, out), h);
   console.log("built", out, h.length);
 }
 build("Vena App.dc.html", "desktop.html", "patch-desktop.js");
