@@ -2798,6 +2798,7 @@ class Component extends DCLogic {
     this._venaReaderText();
     this._venaDesignFacts();
     this._venaDataPrivacy();
+    this._venaMangaDom();
   };
 
   P._venaInit = function () {
@@ -2811,8 +2812,10 @@ class Component extends DCLogic {
     this.storeFeatured = []; this.storeSE = []; this.storeGut = []; this.catalogBooks = [];
     this._vena = {
       books: [], theories: [], settings: null, ai: null, image: null,
-      wikiIdx: null, episode: null, forge: {}, storeOffline: false, relayPresets: []
+      wikiIdx: null, episode: null, forge: {}, storeOffline: false, relayPresets: [],
+      paintTiers: []
     };
+    this._manga = null;
     this._turnSeq = 0;
     // demo-state honesty: no fake serial countdown (no pacing engine exists),
     // no prefilled margin note from a chapter the reader never opened
@@ -2851,7 +2854,13 @@ class Component extends DCLogic {
       });
     }).catch(e => this._honest('SETTINGS', e));
     V.call('get_ai_status').then(a => { this._vena.ai = a; this.setState({}); }).catch(() => {});
+    this._loadPaint();
+  };
+
+  // local paint tiers (paint_tiers) + the image endpoint status (get_image_status)
+  P._loadPaint = function () {
     V.call('get_image_status').then(i => { this._vena.image = i; this.setState({}); }).catch(() => {});
+    V.call('paint_tiers').then(ts => { this._vena.paintTiers = ts || []; this.setState({}); }).catch(() => {});
   };
 
   P._applyBooks = function (books) {
@@ -3156,6 +3165,155 @@ class Component extends DCLogic {
     });
   };
 
+  /* paint weights: real download_paint_model, progress via model:progress kind:'paint' */
+  P._startPaintDl = function (tier) {
+    if (this._paintDlBusy) return;
+    this._paintDlBusy = true;
+    this.setState({ paintDl: { status: 'downloading', pct: 0, tier } });
+    V.call('download_paint_model', { tier }).then(r => {
+      this._paintDlBusy = false;
+      this.setState({ paintDl: { status: 'done', pct: 100, tier } });
+      this._toast(r && r.engine_present === false
+        ? 'WEIGHTS INSTALLED — ALSO INSTALL stable-diffusion.cpp (sd CLI) TO PAINT LOCALLY'
+        : ((r && r.brand) || 'PAINT MODEL') + ' INSTALLED — READY TO PAINT');
+      this._loadPaint();
+    }).catch(e => {
+      this._paintDlBusy = false;
+      this.setState({ paintDl: { status: 'idle', pct: 0 } });
+      this._honest('PAINT MODEL DOWNLOAD FAILED', e);
+    });
+  };
+
+  /* ---------------- real file import (BROWSE FILES) ----------------
+   * Tauri: native dialog → import_book(path). Browser: hidden <input type=file>
+   * → base64 → import_book_data. forge:progress events drive the existing bars.
+   */
+  P._venaBookInput = function () {
+    if (this.__venaBookEl) return this.__venaBookEl;
+    const inp = document.createElement('input');
+    inp.type = 'file';
+    inp.accept = '.epub,.txt,.cbz';
+    inp.style.display = 'none';
+    inp.setAttribute('data-vena-book-input', '1');
+    inp.addEventListener('change', () => {
+      const f = inp.files && inp.files[0];
+      inp.value = '';
+      if (!f) return;
+      const r = new FileReader();
+      r.onload = () => {
+        const b64 = String(r.result || '').split(',')[1] || '';
+        if (!b64) { this._toast('COULD NOT READ THAT FILE'); return; }
+        this._toast('FORGING — THE LEDGER IS BEING WRITTEN');
+        V.call('import_book_data', { name: f.name, data: b64 }).then(meta => {
+          this._toast('LEDGER FORGED ✓ — ' + UP(meta.title || 'BOOK') + ' IS ON THE SHELF');
+          this._refreshBooks();
+        }).catch(e => this._honest('IMPORT FAILED', e));
+      };
+      r.onerror = () => this._toast('COULD NOT READ THAT FILE');
+      r.readAsDataURL(f);
+    });
+    document.body.appendChild(inp);
+    this.__venaBookEl = inp;
+    return inp;
+  };
+
+  P._venaBrowseBook = function () {
+    const T = window.__TAURI__;
+    if (T) {
+      const options = { multiple: false, filters: [{ name: 'Books', extensions: ['epub', 'txt', 'cbz'] }] };
+      const opened = (T.dialog && T.dialog.open)
+        ? T.dialog.open(options)
+        : T.core.invoke('plugin:dialog|open', { options });
+      Promise.resolve(opened).then(sel => {
+        const path = Array.isArray(sel) ? sel[0] : sel;
+        if (!path) return;
+        this._toast('FORGING — THE LEDGER IS BEING WRITTEN');
+        return V.call('import_book', { path: String(path) }).then(meta => {
+          this._toast('LEDGER FORGED ✓ — ' + UP(meta.title || 'BOOK') + ' IS ON THE SHELF');
+          this._refreshBooks();
+        });
+      }).catch(e => this._honest('IMPORT FAILED', e));
+      return;
+    }
+    this._venaBookInput().click();
+  };
+
+  /* ---------------- real CBZ pages (comic profile) ----------------
+   * get_manga_pages → count; get_manga_page → base64, lazily for the visible
+   * spread only, cached per page. Prose books keep the design's demo view.
+   */
+  P._loadManga = function () {
+    const books = (this._vena && this._vena.books) || [];
+    const meta = books.find(b => b.profile === 'comic' && b.slug === this.state.book)
+      || books.find(b => b.profile === 'comic');
+    if (!meta) { this._manga = null; return; }
+    if (this._manga && this._manga.bookId === meta.id) return;
+    V.call('get_manga_pages', { bookId: meta.id }).then(r => {
+      const count = (r && r.count) | 0;
+      this._manga = count > 0
+        ? { bookId: meta.id, title: UP(meta.title), count, cache: {}, pending: {} }
+        : null;
+      this.setState(this._manga ? { mangaPage: 1 } : {});
+    }).catch(e => { this._manga = null; this._honest('CBZ PAGES', e); });
+  };
+
+  P._fetchMangaPage = function (n) {
+    const M = this._manga;
+    if (!M || M.pending[n] || M.cache[n] || n < 1 || n > M.count) return;
+    M.pending[n] = true;
+    V.call('get_manga_page', { bookId: M.bookId, page: n }).then(r => {
+      M.pending[n] = false;
+      if (this._manga !== M || !r || !r.data) return;
+      M.cache[n] = 'data:' + (r.mime || 'image/jpeg') + ';base64,' + r.data;
+      this.setState({});
+    }).catch(e => { M.pending[n] = false; this._honest('PAGE ' + n, e); });
+  };
+
+  P._venaMangaDom = function () {
+    if (!this.state.mangaOpen) return;
+    const M = this._manga;
+    const spans = Array.prototype.slice.call(document.querySelectorAll('span, div'));
+    spans.forEach(el => {
+      if (el.__vMgO == null) el.__vMgO = el.textContent || '';
+      // header title + footer status only change for a REAL comic
+      if (!M) return;
+      if (el.tagName === 'SPAN' && el.__vMgO.indexOf('LITTLE NEMO') === 0 && el.textContent !== M.title) {
+        el.textContent = M.title;
+      } else if (el.__vMgO.indexOf('PLACEHOLDER PAGES') === 0) {
+        const want = 'REAL CBZ · ' + M.count + ' PAGES FROM YOUR FILE · TAP A BUBBLE → DICTIONARY · TRANSLATE · ASK THE CAST';
+        if (el.textContent !== want) el.textContent = want;
+      }
+    });
+    if (!M) return; // prose: the design's demo view stays untouched
+    // page panels: the stroke "P.N" spans mark each page plate
+    spans.forEach(el => {
+      if (el.tagName !== 'SPAN' || !/^P\.\d+$/.test(el.textContent || '')) return;
+      const n = +((el.textContent || '').slice(2));
+      const panel = el.parentElement;
+      if (!panel) return;
+      let img = panel.querySelector('img[data-vena-manga]');
+      if (!img) {
+        img = document.createElement('img');
+        img.setAttribute('data-vena-manga', '1');
+        img.style.cssText = 'position:absolute;inset:0;width:100%;height:100%;object-fit:contain;display:none;image-rendering:pixelated';
+        panel.appendChild(img);
+      }
+      img.alt = 'Comic page ' + n;
+      const grid = panel.querySelector('div');
+      if (grid) grid.style.visibility = 'hidden'; // demo panel grid never shows on a real comic
+      const src = n >= 1 && n <= M.count ? M.cache[n] : null;
+      if (src) {
+        if (img.getAttribute('src') !== src) img.setAttribute('src', src);
+        img.style.display = 'block';
+        el.style.visibility = 'hidden';
+      } else {
+        img.style.display = 'none';
+        el.style.visibility = 'visible'; // the page number doubles as the loading mark
+        if (n >= 1 && n <= M.count) this._fetchMangaPage(n);
+      }
+    });
+  };
+
   /* vision forge: no backend command exists — keep the panel, stay honest */
   P._visionRun = function () {
     this._toast('VISION FORGE NEEDS CLOUD RELAY + AN OCR MODEL — NOT WIRED ON THIS DEVICE');
@@ -3219,7 +3377,11 @@ class Component extends DCLogic {
         return;
       }
       case 'model:progress':
-        if (this.state.dl.status === 'downloading') {
+        if (p.kind === 'paint') {
+          if ((this.state.paintDl || {}).status === 'downloading') {
+            this.setState(s => ({ paintDl: Object.assign({}, s.paintDl, { pct: p.pct | 0 }) }));
+          }
+        } else if (this.state.dl.status === 'downloading') {
           this.setState(s => ({ dl: Object.assign({}, s.dl, { pct: p.pct | 0 }) }));
         }
         return;
@@ -3675,10 +3837,46 @@ class Component extends DCLogic {
       };
     });
 
+    /* paint tiers: real catalog (paint_tiers), real downloads, real installs.
+     * get_image_status reports tier 'desktop' when models/paint merely exists;
+     * only trust it once a tier's weights are actually installed. */
     const img = D.image;
-    const hasPaint = !!(img && img.tier && img.tier !== 'none');
-    const paintModels = [{
-      id: 'paint',
+    const anyPaintInstalled = (D.paintTiers || []).some(t => t.installed);
+    const hasPaint = !!(img && (img.tier === 'api' || (img.tier === 'desktop' && anyPaintInstalled)));
+    const pDl = st.paintDl || {};
+    const paintDescs = {
+      sketch: 'Stable Diffusion 1.5 — quick covers and portraits on this device.',
+      easel: 'SDXL base — richer paint, heavier download. Worth it on a desktop.'
+    };
+    const paintModels = (D.paintTiers || []).map(t => {
+      const installed = !!t.installed;
+      const downloading = pDl.status === 'downloading' && pDl.tier === t.id;
+      return {
+        id: 'paint-' + t.id,
+        chip: t.id === 'sketch' ? '1.5' : 'XL',
+        name: t.brand,
+        size: t.size_gb.toFixed(1) + ' GB' + (installed ? ' · INSTALLED' : ''),
+        desc: paintDescs[t.id] || '',
+        active: false,
+        op: '1', cur: 'default',
+        shdw: installed ? '3px 3px 0 var(--cyan)' : '3px 3px 0 var(--shdw)',
+        chipBg: installed ? 'var(--cyan)' : 'var(--ink)', chipCol: 'var(--inv)',
+        downloading, dlW: (downloading ? pDl.pct | 0 : 0) + '%', dlPct: downloading ? pDl.pct | 0 : 0,
+        btnLabel: installed ? 'INSTALLED ✓' : downloading ? 'DOWNLOADING…' : 'DOWNLOAD',
+        btnAria: t.brand + (installed ? ' — installed' : ' — download'),
+        btnBg: 'transparent', btnCol: installed ? 'var(--cyan)' : 'var(--ink)',
+        btnCur: installed || downloading ? 'default' : 'pointer',
+        pick: noop,
+        btnAct: e => {
+          e && e.stopPropagation && e.stopPropagation();
+          if (installed || downloading) return;
+          this._startPaintDl(t.id);
+        }
+      };
+    });
+    // the api-endpoint row (CONFIGURE) stays — same relay-config door as before
+    paintModels.push({
+      id: 'paint-api',
       chip: hasPaint ? UP(img.tier).slice(0, 2) : '—',
       name: hasPaint ? UP(img.model || img.tier) : 'NO PAINT MODEL INSTALLED',
       size: hasPaint ? 'ON DEVICE' : '',
@@ -3693,7 +3891,7 @@ class Component extends DCLogic {
       btnAria: 'Paint engine', btnBg: 'transparent', btnCol: 'var(--ink)', btnCur: 'pointer',
       pick: noop,
       btnAct: () => this.setState({ relayCfgOpen: true })
-    }];
+    });
 
     const tgl = (key, label, desc, settingKey) => ({
       label, desc,
@@ -3918,6 +4116,52 @@ class Component extends DCLogic {
       });
     };
 
+    /* ---- Gutenberg: real store_browse defaults + topic chips (topic@page) ---- */
+    const gutBrowse = topic => {
+      this.setState({ gutTopic: topic, gutBusy: true });
+      const args = topic
+        ? { source: 'gutenberg', cursor: topic.toLowerCase() + '@1' }
+        : { source: 'gutenberg' };
+      V.call('store_browse', args).then(items => {
+        this.storeGut = (items || []).map(x => this._storeItemDef(x, 'gut'));
+        this.setState({ gutBusy: false });
+      }).catch(e => {
+        this.storeGut = [];
+        this._vena.storeOffline = true;
+        this.setState({ gutBusy: false });
+        this._honest('GUTENBERG UNREACHABLE', e);
+      });
+    };
+    const gq = String(st.gutQ || '').trim().toLowerCase();
+    const gutRowsReal = (this.storeGut || [])
+      .filter(x => !gq || (x.title + ' ' + x.author).toLowerCase().includes(gq))
+      .slice(0, 8)
+      .map(x => {
+        const s = st.storeSt[x.id] || {};
+        return Object.assign({}, x, {
+          isIdle: s.status !== 'dl' && s.status !== 'forge' && s.status !== 'done',
+          isDl: s.status === 'dl', isForge: s.status === 'forge', isDone: s.status === 'done',
+          pctW: (s.pct || 0) + '%', pctLbl: (s.pct || 0) + '%',
+          get: () => this._storeGet(x),
+          goShelf: go('library')
+        });
+      });
+
+    /* ---- real CBZ paging (bounds & labels from the real page count) ---- */
+    const MG = this._manga;
+    const mgPage = MG ? Math.max(1, Math.min(st.mangaPage, MG.count)) : st.mangaPage;
+    const mgStep = st.mangaSpread ? 2 : 1;
+    const mangaReal = MG ? {
+      mangaPageLbl: st.mangaSpread && mgPage < MG.count
+        ? mgPage + '–' + Math.min(MG.count, mgPage + 1) + ' / ' + MG.count
+        : mgPage + ' / ' + MG.count,
+      mangaLeftN: st.mangaRtl && st.mangaSpread ? Math.min(MG.count, mgPage + 1) : mgPage,
+      mangaRightN: st.mangaRtl && st.mangaSpread ? mgPage : Math.min(MG.count, mgPage + 1),
+      mangaPrev: () => this.setState({ mangaPage: Math.max(1, mgPage - mgStep) }),
+      mangaNext: () => this.setState({ mangaPage: Math.min(MG.count, mgPage + mgStep) }),
+      mangaStrip: Array.from({ length: Math.max(1, Math.min(4, MG.count - mgPage + 1)) }, (_, i) => ({ n: mgPage + i }))
+    } : {};
+
     /* ---------------- the tail itself ---------------- */
     return {
       /* system bar */
@@ -3947,7 +4191,12 @@ class Component extends DCLogic {
           V.call('set_setting', { key: 'theme', value: t.k }).catch(() => {});
         }
       })),
-      noop,
+      // BROWSE FILES (real import) and READ THE BRANCH share the template's {{ noop }}
+      noop: e => {
+        const t = (e && e.target && e.target.textContent) || '';
+        if (/BROWSE FILES/i.test(t)) this._venaBrowseBook();
+        else if (/READ THE BRANCH/i.test(t)) this._toast('WHAT-IF BRANCHES AREN’T WIRED TO THE ENGINE YET');
+      },
 
       /* screens */
       scrLibrary: st.screen === 'library',
@@ -3961,6 +4210,19 @@ class Component extends DCLogic {
       shelfMeta: books.length + ' BOOK' + (books.length === 1 ? '' : 'S') + ' · '
         + books.filter(b => b.isForged).length + ' LEDGERS FORGED · YOUR BOOKS, YOUR DEVICE, NOTHING LEAVES IT',
       visionStart: () => this._visionRun(),
+
+      /* comics: real pages when a comic is on the shelf, demo view otherwise */
+      mangaOpenFn: () => { this.setState({ mangaOpen: true }); this._loadManga(); },
+      ...mangaReal,
+
+      /* store · gutenberg: real most-downloaded page + topic chips */
+      gutRows: gutRowsReal,
+      gutChips: ['MYSTERY', 'GOTHIC', 'ADVENTURE'].map(c => ({
+        label: c,
+        bg: st.gutTopic === c ? 'var(--ink)' : 'transparent',
+        col: st.gutTopic === c ? 'var(--inv)' : 'var(--ink)',
+        pick: () => gutBrowse(st.gutTopic === c ? null : c)
+      })),
 
       /* companion header + states */
       ch, chRoman,

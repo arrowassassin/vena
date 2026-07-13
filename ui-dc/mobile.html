@@ -2363,6 +2363,13 @@ class Component extends DCLogic {
         if (phase) this.setState({ phase: phase });
       }
     } else if (name === "model:progress") {
+      if (p.kind === "paint") {
+        var pd = this.state.paintDl || {};
+        if (pd.status === "downloading") {
+          this.setState({ paintDl: { status: "downloading", pct: Math.max(pd.pct || 0, p.pct | 0), tier: pd.tier || p.tier } });
+        }
+        return;
+      }
       var dl = this.state.dl || {};
       if (dl.status === "downloading" && (!dl.tier || dl.tier === p.tier)) {
         this.setState({ dl: { status: "downloading", pct: Math.max(dl.pct || 0, p.pct | 0), tier: dl.tier || p.tier } });
@@ -2440,6 +2447,7 @@ class Component extends DCLogic {
       self.setState(upd);
     }).catch(function () {});
     V.call("get_image_status").then(function (is) { self._imageStatus = is; self.forceUpdate(); }).catch(function () {});
+    V.call("paint_tiers").then(function (ts) { self._paintTiers = ts || []; self.forceUpdate(); }).catch(function () {});
     V.call("relay_presets").then(function (ps) { self._relayPresets = ps || []; self.forceUpdate(); }).catch(function () {});
     this._refreshAi();
   };
@@ -2671,6 +2679,27 @@ class Component extends DCLogic {
     });
   };
 
+  // paint weights: real download_paint_model, progress via model:progress kind:'paint'
+  P._startPaintDl = function (tier) {
+    var self = this;
+    if (this._paintDlBusy) { this._toast("A DOWNLOAD IS ALREADY RUNNING"); return; }
+    this._paintDlBusy = true;
+    this.setState({ paintDl: { status: "downloading", pct: 0, tier: tier } });
+    V.call("download_paint_model", { tier: tier }).then(function (r) {
+      self._paintDlBusy = false;
+      self.setState({ paintDl: { status: "done", pct: 100, tier: tier } });
+      self._toast(r && r.engine_present === false
+        ? "WEIGHTS INSTALLED — ALSO INSTALL stable-diffusion.cpp (sd CLI) TO PAINT LOCALLY"
+        : ((r && r.brand) || "PAINT MODEL") + " INSTALLED — READY TO PAINT");
+      V.call("paint_tiers").then(function (ts) { self._paintTiers = ts || []; self.forceUpdate(); }).catch(function () {});
+      V.call("get_image_status").then(function (is) { self._imageStatus = is; self.forceUpdate(); }).catch(function () {});
+    }).catch(function (e) {
+      self._paintDlBusy = false;
+      self.setState({ paintDl: { status: "idle", pct: 0 } });
+      self._up(e);
+    });
+  };
+
   P._activateLocal = function (tierId, brand) {
     var self = this;
     V.call("set_chat_mode", { mode: "local" }).then(function () {
@@ -2794,15 +2823,133 @@ class Component extends DCLogic {
   };
 
   // ----------------------------------------------------------------- import
+  // BROWSE FILES, for real: Tauri → native dialog + import_book(path);
+  // browser → hidden <input type=file> → base64 → import_book_data.
+  P._venaBookInput = function () {
+    if (this.__venaBookEl) return this.__venaBookEl;
+    var self = this;
+    var inp = document.createElement("input");
+    inp.type = "file";
+    inp.accept = ".epub,.txt,.cbz";
+    inp.style.display = "none";
+    inp.setAttribute("data-vena-book-input", "1");
+    inp.addEventListener("change", function () {
+      var f = inp.files && inp.files[0];
+      inp.value = "";
+      if (!f) return;
+      var r = new FileReader();
+      r.onload = function () {
+        var b64 = String(r.result || "").split(",")[1] || "";
+        if (!b64) { self._toast("COULD NOT READ THAT FILE"); return; }
+        self._toast("FORGING — THE LEDGER IS BEING WRITTEN");
+        V.call("import_book_data", { name: f.name, data: b64 }).then(function (meta) {
+          self._toast("LEDGER FORGED ✓ — " + String(meta.title || "BOOK").toUpperCase() + " IS ON THE SHELF");
+          self._hydrate();
+        }).catch(function (e) { self._up(e); });
+      };
+      r.onerror = function () { self._toast("COULD NOT READ THAT FILE"); };
+      r.readAsDataURL(f);
+    });
+    document.body.appendChild(inp);
+    this.__venaBookEl = inp;
+    return inp;
+  };
+
   P._importPrompt = function () {
     var self = this;
-    var path = window.prompt("Path to an EPUB or .vena package on this machine:");
-    if (!path || !path.trim()) return;
-    this._toast("FORGING — THE LEDGER IS BEING WRITTEN");
-    V.call("import_book", { path: path.trim() }).then(function (meta) {
-      self._toast("LEDGER FORGED ✓ — " + String(meta.title || "BOOK").toUpperCase() + " IS ON THE SHELF");
-      self._hydrate();
-    }).catch(function (e) { self._up(e); });
+    var T = window.__TAURI__;
+    if (T) {
+      var options = { multiple: false, filters: [{ name: "Books", extensions: ["epub", "txt", "cbz"] }] };
+      var opened = (T.dialog && T.dialog.open)
+        ? T.dialog.open(options)
+        : T.core.invoke("plugin:dialog|open", { options: options });
+      Promise.resolve(opened).then(function (sel) {
+        var path = Array.isArray(sel) ? sel[0] : sel;
+        if (!path) return;
+        self._toast("FORGING — THE LEDGER IS BEING WRITTEN");
+        return V.call("import_book", { path: String(path) }).then(function (meta) {
+          self._toast("LEDGER FORGED ✓ — " + String(meta.title || "BOOK").toUpperCase() + " IS ON THE SHELF");
+          self._hydrate();
+        });
+      }).catch(function (e) { self._up(e); });
+      return;
+    }
+    this._venaBookInput().click();
+  };
+
+  // -------------------------------------------- real CBZ pages (comic profile)
+  P._loadManga = function () {
+    var self = this;
+    var metas = [];
+    if (this._bySlug) Object.keys(this._bySlug).forEach(function (k) { metas.push(self._bySlug[k]); });
+    var meta = metas.filter(function (m) { return m.profile === "comic" && m.slug === self.state.book; })[0]
+      || metas.filter(function (m) { return m.profile === "comic"; })[0];
+    if (!meta) { this._manga = null; return; }
+    if (this._manga && this._manga.bookId === meta.id) return;
+    V.call("get_manga_pages", { bookId: meta.id }).then(function (r) {
+      var count = (r && r.count) | 0;
+      self._manga = count > 0
+        ? { bookId: meta.id, title: String(meta.title || "").toUpperCase(), count: count, cache: {}, pending: {} }
+        : null;
+      self.setState(self._manga ? { mangaPage: 1 } : {});
+    }).catch(function (e) { self._manga = null; self._up(e); });
+  };
+
+  P._fetchMangaPage = function (n) {
+    var self = this;
+    var M = this._manga;
+    if (!M || M.pending[n] || M.cache[n] || n < 1 || n > M.count) return;
+    M.pending[n] = true;
+    V.call("get_manga_page", { bookId: M.bookId, page: n }).then(function (r) {
+      M.pending[n] = false;
+      if (self._manga !== M || !r || !r.data) return;
+      M.cache[n] = "data:" + (r.mime || "image/jpeg") + ";base64," + r.data;
+      self.setState({});
+    }).catch(function (e) { M.pending[n] = false; self._up(e); });
+  };
+
+  P._applyMangaPages = function () {
+    if (!this.state.mangaOpen) return;
+    var self = this;
+    var M = this._manga;
+    var els = document.querySelectorAll("span, div");
+    Array.prototype.forEach.call(els, function (el) {
+      if (el.__vMgO == null) el.__vMgO = el.textContent || "";
+      if (!M) return; // prose: the design's demo view stays untouched
+      if (el.tagName === "SPAN" && el.__vMgO.indexOf("LITTLE NEMO") === 0 && el.textContent !== M.title) {
+        el.textContent = M.title;
+      } else if (el.__vMgO.indexOf("PLACEHOLDER PAGES") === 0) {
+        var want = "REAL CBZ · " + M.count + " PAGES FROM YOUR FILE · TAP A BUBBLE → DICTIONARY · TRANSLATE · ASK THE CAST";
+        if (el.textContent !== want) el.textContent = want;
+      }
+    });
+    if (!M) return;
+    Array.prototype.forEach.call(els, function (el) {
+      if (el.tagName !== "SPAN" || !/^P\.\d+$/.test(el.textContent || "")) return;
+      var n = +String(el.textContent || "").slice(2);
+      var panel = el.parentElement;
+      if (!panel) return;
+      var img = panel.querySelector("img[data-vena-manga]");
+      if (!img) {
+        img = document.createElement("img");
+        img.setAttribute("data-vena-manga", "1");
+        img.style.cssText = "position:absolute;inset:0;width:100%;height:100%;object-fit:contain;display:none;image-rendering:pixelated";
+        panel.appendChild(img);
+      }
+      img.alt = "Comic page " + n;
+      var grid = panel.querySelector("div");
+      if (grid) grid.style.visibility = "hidden";
+      var src = n >= 1 && n <= M.count ? M.cache[n] : null;
+      if (src) {
+        if (img.getAttribute("src") !== src) img.setAttribute("src", src);
+        img.style.display = "block";
+        el.style.visibility = "hidden";
+      } else {
+        img.style.display = "none";
+        el.style.visibility = "visible"; // the page number doubles as the loading mark
+        if (n >= 1 && n <= M.count) self._fetchMangaPage(n);
+      }
+    });
   };
 
   // -------------------------------------------- real reader text (DOM swap)
@@ -2817,6 +2964,7 @@ class Component extends DCLogic {
     this._applyReaderText();
     this._applyDesignFacts();
     this._applyDataPrivacy();
+    this._applyMangaPages();
   };
 
   // -------------------------------------------- static demo copy → real data
@@ -3072,6 +3220,19 @@ class Component extends DCLogic {
       else if (/READ THE BRANCH/i.test(t)) self._toast("WHAT-IF BRANCHES AREN’T WIRED TO THE ENGINE YET");
     };
 
+    // --- comics: real CBZ pages when a comic is on the shelf, demo otherwise
+    v.mangaOpenFn = function () { self.setState({ mangaOpen: true }); self._loadManga(); };
+    if (this._manga) {
+      var MG = this._manga;
+      var mgPage = Math.max(1, Math.min(st.mangaPage, MG.count));
+      v.mangaPageN = mgPage;
+      v.mangaPageLbl = mgPage + " / " + MG.count;
+      v.mangaPrev = function () { self.setState({ mangaPage: Math.max(1, mgPage - 1) }); };
+      v.mangaNext = function () { self.setState({ mangaPage: Math.min(MG.count, mgPage + 1) }); };
+      v.mangaStrip = [];
+      for (var mgi = 0; mgi < Math.max(1, Math.min(4, MG.count - mgPage + 1)); mgi++) v.mangaStrip.push({ n: mgPage + mgi });
+    }
+
     // --- app bar: honest model badge
     if (this._ai) {
       var badge = this._ai.ready
@@ -3247,8 +3408,55 @@ class Component extends DCLogic {
       });
     }
 
-    // --- paint models: no local diffusion backend exists — never claim installs
-    if (this._imageStatus && this._imageStatus.tier === "none") {
+    // --- paint models: the REAL tier catalog (paint_tiers) + real downloads
+    if (this._paintTiers && this._paintTiers.length) {
+      var pDl = st.paintDl || {};
+      var pDescs = {
+        sketch: "Stable Diffusion 1.5 — quick covers and portraits on this device.",
+        easel: "SDXL base — richer paint, heavier download.",
+      };
+      v.paintModels = this._paintTiers.map(function (t) {
+        var installed = !!t.installed;
+        var downloading = pDl.status === "downloading" && pDl.tier === t.id;
+        return {
+          id: "paint-" + t.id,
+          chip: t.id === "sketch" ? "1.5" : "XL",
+          name: t.brand,
+          size: t.size_gb.toFixed(1) + " GB" + (installed ? " · INSTALLED" : ""),
+          desc: pDescs[t.id] || "",
+          active: false, op: "1",
+          shdw: installed ? "3px 3px 0 var(--cyan)" : "2px 2px 0 var(--shdw)",
+          chipBg: installed ? "var(--cyan)" : "var(--ink)", chipCol: "var(--inv)",
+          downloading: downloading,
+          dlW: (downloading ? pDl.pct | 0 : 0) + "%", dlPct: downloading ? pDl.pct | 0 : 0,
+          btnLabel: installed ? "INSTALLED ✓" : downloading ? "GETTING…" : "DOWNLOAD",
+          btnAria: t.brand + (installed ? " — installed" : " — download"),
+          btnBg: "transparent", btnCol: installed ? "var(--cyan)" : "var(--ink)",
+          btnCur: installed || downloading ? "default" : "pointer",
+          btnAct: function () {
+            if (installed) return;
+            if (downloading) { self._toast("DOWNLOAD RUNNING — LET IT FINISH"); return; }
+            self._startPaintDl(t.id);
+          },
+        };
+      });
+      // an api image endpoint (via the relay) still shows as an honest status row
+      var imgSt = this._imageStatus;
+      if (imgSt && imgSt.tier === "api") {
+        v.paintModels.push({
+          id: "paint-api", chip: "API",
+          name: String(imgSt.model || "IMAGE ENDPOINT").toUpperCase(),
+          size: "VIA RELAY",
+          desc: "Covers and portraits arrive from the configured image endpoint — stamped ✦ AI.",
+          active: true, op: "1", shdw: "3px 3px 0 var(--cyan)",
+          chipBg: "var(--cyan)", chipCol: "var(--inv)",
+          downloading: false, dlW: "0%", dlPct: 0,
+          btnLabel: "ACTIVE", btnAria: "Image endpoint — active",
+          btnBg: "transparent", btnCol: "var(--cyan)", btnCur: "default",
+          btnAct: function () {},
+        });
+      }
+    } else if (this._imageStatus && this._imageStatus.tier === "none") {
       var paintToast = function () { self._toast("LOCAL PAINT MODELS AREN’T WIRED — PORTRAITS ARRIVE VIA THE RELAY"); };
       v.paintModels = v.paintModels.map(function (m) {
         return Object.assign({}, m, {
