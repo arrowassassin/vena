@@ -2878,21 +2878,53 @@ class Component extends DCLogic {
   };
 
   // -------------------------------------------- real CBZ pages (comic profile)
-  P._loadManga = function () {
+  // the viewer's shown header title (the design's demo header until replaced) —
+  // used to pick WHICH real comic the viewer means when several are on the shelf
+  P._mangaShownTitle = function () {
+    var spans = document.querySelectorAll("span");
+    for (var i = 0; i < spans.length; i++) {
+      var o = spans[i].__vMgO != null ? spans[i].__vMgO : spans[i].textContent;
+      if (String(o || "").indexOf("LITTLE NEMO") === 0) return String(o);
+    }
+    return "LITTLE NEMO IN SLUMBERLAND"; // the design's hardcoded demo header
+  };
+
+  // Resolve the REAL comic regardless of the current-book context: an explicit
+  // target (a shelf comic card) wins; else prefer a title match against the
+  // viewer's shown title; else the open book if it is a comic; else the first
+  // comic on the shelf. Only a shelf with NO comic at all keeps the demo view.
+  P._loadManga = function (target) {
     var self = this;
     var metas = [];
     if (this._bySlug) Object.keys(this._bySlug).forEach(function (k) { metas.push(self._bySlug[k]); });
-    var meta = metas.filter(function (m) { return m.profile === "comic" && m.slug === self.state.book; })[0]
-      || metas.filter(function (m) { return m.profile === "comic"; })[0];
+    var comics = metas.filter(function (m) { return m.profile === "comic"; });
+    var norm = function (s) { return String(s || "").toUpperCase().replace(/\s+/g, " ").trim(); };
+    var shown = norm(this._mangaShownTitle());
+    var meta = target
+      || comics.filter(function (m) {
+        var t = norm(m.title);
+        return t && shown && (t === shown || t.indexOf(shown) === 0 || shown.indexOf(t) === 0);
+      })[0]
+      || comics.filter(function (m) { return m.slug === self.state.book; })[0]
+      || comics[0];
     if (!meta) { this._manga = null; return; }
+    if (target) this._mangaFail = null; // an explicit open always retries
     if (this._manga && this._manga.bookId === meta.id) return;
+    if (this._mangaLoading === meta.id || this._mangaFail === meta.id) return;
+    if (target && this._manga && this._manga.bookId !== meta.id) this._manga = null;
+    this._mangaLoading = meta.id;
     V.call("get_manga_pages", { bookId: meta.id }).then(function (r) {
+      if (self._mangaLoading === meta.id) self._mangaLoading = null;
       var count = (r && r.count) | 0;
-      self._manga = count > 0
-        ? { bookId: meta.id, title: String(meta.title || "").toUpperCase(), count: count, cache: {}, pending: {} }
-        : null;
-      self.setState(self._manga ? { mangaPage: 1 } : {});
-    }).catch(function (e) { self._manga = null; self._up(e); });
+      if (count <= 0) { self._mangaFail = meta.id; self._manga = null; self.setState({}); return; }
+      self._manga = { bookId: meta.id, title: String(meta.title || "").toUpperCase(), count: count, cache: {}, pending: {} };
+      self.setState({ mangaPage: 1 });
+    }).catch(function (e) {
+      if (self._mangaLoading === meta.id) self._mangaLoading = null;
+      self._mangaFail = meta.id;
+      self._manga = null;
+      self._up(e);
+    });
   };
 
   P._fetchMangaPage = function (n) {
@@ -2911,6 +2943,9 @@ class Component extends DCLogic {
   P._applyMangaPages = function () {
     if (!this.state.mangaOpen) return;
     var self = this;
+    // the viewer can open from ANY path (demo showcase card, a shelf comic
+    // card, restored state) — resolve the real comic whenever it is open
+    if (!this._manga && !this._mangaLoading) this._loadManga();
     var M = this._manga;
     var els = document.querySelectorAll("span, div");
     Array.prototype.forEach.call(els, function (el) {
@@ -3194,6 +3229,15 @@ class Component extends DCLogic {
       v.books.forEach(function (b) {
         var m = self._bySlug[b.id];
         if (!m) return;
+        // a comic card opens the manga page view wired to ITS bookId
+        if (m.profile === "comic") {
+          var openManga = function () { self.setState({ mangaOpen: true }); self._loadManga(m); };
+          b.act = openManga;
+          b.goComp = openManga;
+          b.btnLabel = "PAGE VIEW →";
+          b.btnCur = "pointer";
+          b.btnOp = "1";
+        }
         b.facts = (m.fact_count || 0).toLocaleString();
         var prog = m.progress_episode || 0;
         if (b.id === st.book) prog = ch;

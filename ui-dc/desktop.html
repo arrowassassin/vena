@@ -3242,19 +3242,51 @@ class Component extends DCLogic {
    * get_manga_pages → count; get_manga_page → base64, lazily for the visible
    * spread only, cached per page. Prose books keep the design's demo view.
    */
-  P._loadManga = function () {
+  // the viewer's shown header title (the design's demo header until replaced) —
+  // used to pick WHICH real comic the viewer means when several are on the shelf
+  P._mangaShownTitle = function () {
+    const spans = document.querySelectorAll('span');
+    for (let i = 0; i < spans.length; i++) {
+      const o = spans[i].__vMgO != null ? spans[i].__vMgO : spans[i].textContent;
+      if (String(o || '').indexOf('LITTLE NEMO') === 0) return String(o);
+    }
+    return 'LITTLE NEMO IN SLUMBERLAND'; // the design's hardcoded demo header
+  };
+
+  // Resolve the REAL comic regardless of the current-book context: an explicit
+  // target (a shelf comic card) wins; else prefer a title match against the
+  // viewer's shown title; else the open book if it is a comic; else the first
+  // comic on the shelf. Only a shelf with NO comic at all keeps the demo view.
+  P._loadManga = function (target) {
     const books = (this._vena && this._vena.books) || [];
-    const meta = books.find(b => b.profile === 'comic' && b.slug === this.state.book)
-      || books.find(b => b.profile === 'comic');
+    const comics = books.filter(b => b.profile === 'comic');
+    const norm = s => String(s || '').toUpperCase().replace(/\s+/g, ' ').trim();
+    const shown = norm(this._mangaShownTitle());
+    const meta = target
+      || comics.find(b => {
+        const t = norm(b.title);
+        return t && shown && (t === shown || t.indexOf(shown) === 0 || shown.indexOf(t) === 0);
+      })
+      || comics.find(b => b.slug === this.state.book)
+      || comics[0];
     if (!meta) { this._manga = null; return; }
+    if (target) this._mangaFail = null; // an explicit open always retries
     if (this._manga && this._manga.bookId === meta.id) return;
+    if (this._mangaLoading === meta.id || this._mangaFail === meta.id) return;
+    if (target && this._manga && this._manga.bookId !== meta.id) this._manga = null;
+    this._mangaLoading = meta.id;
     V.call('get_manga_pages', { bookId: meta.id }).then(r => {
+      if (this._mangaLoading === meta.id) this._mangaLoading = null;
       const count = (r && r.count) | 0;
-      this._manga = count > 0
-        ? { bookId: meta.id, title: UP(meta.title), count, cache: {}, pending: {} }
-        : null;
-      this.setState(this._manga ? { mangaPage: 1 } : {});
-    }).catch(e => { this._manga = null; this._honest('CBZ PAGES', e); });
+      if (count <= 0) { this._mangaFail = meta.id; this._manga = null; this.setState({}); return; }
+      this._manga = { bookId: meta.id, title: UP(meta.title), count, cache: {}, pending: {} };
+      this.setState({ mangaPage: 1 });
+    }).catch(e => {
+      if (this._mangaLoading === meta.id) this._mangaLoading = null;
+      this._mangaFail = meta.id;
+      this._manga = null;
+      this._honest('CBZ PAGES', e);
+    });
   };
 
   P._fetchMangaPage = function (n) {
@@ -3271,6 +3303,9 @@ class Component extends DCLogic {
 
   P._venaMangaDom = function () {
     if (!this.state.mangaOpen) return;
+    // the viewer can open from ANY path (demo showcase card, a shelf comic
+    // card, restored state) — resolve the real comic whenever it is open
+    if (!this._manga && !this._mangaLoading) this._loadManga();
     const M = this._manga;
     const spans = Array.prototype.slice.call(document.querySelectorAll('span, div'));
     spans.forEach(el => {
@@ -3717,7 +3752,7 @@ class Component extends DCLogic {
           .catch(err => { delete this._vena.forge[m.id]; this.setState({}); this._honest('FORGE FAILED', err); });
       };
       const sealed = b.status === 'forged' || b.status === 'fresh';
-      return {
+      const card = {
         id: b.id, title: b.title, author: b.author, cover: b.cover,
         badge: sealed ? 'LEDGER FORGED ✓' : forging ? 'FORGING…' : 'RAW EPUB',
         badgeBg: forging ? 'var(--red)' : 'transparent',
@@ -3741,6 +3776,17 @@ class Component extends DCLogic {
         goComp: openComp,
         del: () => this.setState({ delModal: b.id })
       };
+      // a comic card opens the manga page view wired to ITS bookId
+      if (m.profile === 'comic') {
+        const openManga = () => { this.setState({ mangaOpen: true }); this._loadManga(m); };
+        card.act = openManga;
+        card.goComp = openManga;
+        card.btnLabel = 'OPEN PAGE VIEW →';
+        card.btnBg = 'var(--ink)'; card.btnCol = 'var(--inv)';
+        card.btnShdw = '4px 4px 0 var(--red)';
+        card.btnCur = 'pointer'; card.btnOp = '1';
+      }
+      return card;
     });
 
     /* ---- cast / silhouettes (met = the real ledger's word) ---- */
