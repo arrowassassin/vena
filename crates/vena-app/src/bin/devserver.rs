@@ -348,6 +348,37 @@ fn dispatch(
         "get_settings" => api.get_settings(),
         "set_setting" => jv(api.set_setting(&s("key"), &s("value"))?),
         "get_image_status" => jv(api.get_image_status()?),
+        "paint_tiers" => Ok(api.paint_tiers()),
+        "download_paint_model" => {
+            let ev = events.clone();
+            let tier = s("tier");
+            let t2 = tier.clone();
+            api.download_paint_model(&tier, |pct| {
+                push(
+                    &ev,
+                    "model:progress",
+                    serde_json::json!({ "tier": t2, "pct": pct, "kind": "paint" }),
+                );
+            })
+        }
+        "get_manga_pages" => api.get_manga_pages(i("bookId")),
+        "get_manga_page" => api.get_manga_page(i("bookId"), i("page")),
+        "import_book_data" => {
+            let ev = events.clone();
+            let meta = api.import_book_data(&s("name"), &s("data"), |pct, stage| {
+                push(
+                    &ev,
+                    "forge:progress",
+                    serde_json::json!({ "pct": pct, "stage": stage }),
+                );
+            })?;
+            push(
+                events,
+                "forge:done",
+                serde_json::json!({ "bookId": meta.id, "ledgerCoverage": meta.ledger_coverage }),
+            );
+            jv(meta)
+        }
         other => Err(VenaError::NotFound(format!("command {other}"))),
     }
 }

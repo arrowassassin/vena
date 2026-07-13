@@ -518,6 +518,72 @@ fn set_setting(api: State<'_, Api>, key: String, value: String) -> Result<(), Ve
 }
 
 #[tauri::command]
+fn paint_tiers(api: State<'_, Api>) -> Result<serde_json::Value, VenaError> {
+    Ok(api.paint_tiers())
+}
+
+#[tauri::command]
+async fn download_paint_model(
+    app: tauri::AppHandle,
+    api: State<'_, Api>,
+    tier: String,
+) -> Result<serde_json::Value, VenaError> {
+    let api = api.inner().clone();
+    let handle = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let t2 = tier.clone();
+        api.download_paint_model(&tier, |pct| {
+            let _ = handle.emit(
+                "model:progress",
+                serde_json::json!({ "tier": t2, "pct": pct, "kind": "paint" }),
+            );
+        })
+    })
+    .await
+    .map_err(|e| VenaError::Other(e.to_string()))?
+}
+
+#[tauri::command]
+fn get_manga_pages(api: State<'_, Api>, book_id: i64) -> Result<serde_json::Value, VenaError> {
+    api.get_manga_pages(book_id)
+}
+
+#[tauri::command]
+fn get_manga_page(
+    api: State<'_, Api>,
+    book_id: i64,
+    page: i64,
+) -> Result<serde_json::Value, VenaError> {
+    api.get_manga_page(book_id, page)
+}
+
+#[tauri::command]
+async fn import_book_data(
+    app: tauri::AppHandle,
+    api: State<'_, Api>,
+    name: String,
+    data: String,
+) -> Result<BookMeta, VenaError> {
+    let api = api.inner().clone();
+    let handle = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let meta = api.import_book_data(&name, &data, |pct, stage| {
+            let _ = handle.emit(
+                "forge:progress",
+                serde_json::json!({ "pct": pct, "stage": stage }),
+            );
+        })?;
+        let _ = handle.emit(
+            "forge:done",
+            serde_json::json!({ "bookId": meta.id, "ledgerCoverage": meta.ledger_coverage }),
+        );
+        Ok(meta)
+    })
+    .await
+    .map_err(|e| VenaError::Other(e.to_string()))?
+}
+
+#[tauri::command]
 fn get_image_status(api: State<'_, Api>) -> Result<ImageStatus, VenaError> {
     api.get_image_status()
 }
@@ -585,6 +651,11 @@ fn main() {
             get_settings,
             set_setting,
             get_image_status,
+            paint_tiers,
+            download_paint_model,
+            get_manga_pages,
+            get_manga_page,
+            import_book_data,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Vena");

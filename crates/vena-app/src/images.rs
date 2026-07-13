@@ -64,9 +64,18 @@ impl AppApi {
             on_progress(100);
             return Ok(path.to_string_lossy().into());
         }
-        // Tier 2: local Paint Engine — present only if the user installed it.
-        // (stable-diffusion.cpp integration lands with the Paint Engine download;
-        // absent install = fall through, per the spec's chain.)
+        // Tier 2: local Paint Engine — downloaded GGUF weights rendered through the
+        // stable-diffusion.cpp `sd` CLI when it is installed; otherwise fall through.
+        on_progress(40);
+        if let Some(png_bytes) = self.sd_render(
+            &portrait_prompt(&character.name, &character.voice_card.diction, &gated_texts),
+            512,
+            512,
+        )? {
+            std::fs::write(&path, png_bytes)?;
+            on_progress(100);
+            return Ok(path.to_string_lossy().into());
+        }
         // Tier 3: graceful skip — initial-letter typographic portrait (real asset).
         on_progress(60);
         let svg = typographic_portrait_svg(&character.name);
@@ -121,12 +130,62 @@ impl AppApi {
             on_progress(100);
             return Ok(png_path.to_string_lossy().into());
         }
+        on_progress(40);
+        if let Some(png_bytes) = self.sd_render(
+            &cover_prompt(&book.title, book.author.as_deref(), &ambient),
+            512,
+            768,
+        )? {
+            std::fs::write(&png_path, png_bytes)?;
+            self.set_cover_asset(book_id, &png_path)?;
+            on_progress(100);
+            return Ok(png_path.to_string_lossy().into());
+        }
         on_progress(60);
         let svg = typographic_cover_svg(&book.title, book.author.as_deref());
         std::fs::write(&svg_path, svg)?;
         self.set_cover_asset(book_id, &svg_path)?;
         on_progress(100);
         Ok(svg_path.to_string_lossy().into())
+    }
+
+    /// Tier 2: render locally via stable-diffusion.cpp's `sd` CLI using downloaded
+    /// GGUF weights. None when weights or the engine binary are absent (honest
+    /// fallthrough — never blocks on image quality).
+    fn sd_render(&self, prompt: &str, w: u32, h: u32) -> Result<Option<Vec<u8>>> {
+        let Some((model, engine)) = self.local_paint() else {
+            return Ok(None);
+        };
+        if !engine {
+            return Ok(None); // weights downloaded, engine missing — status reports it
+        }
+        let out = std::env::temp_dir().join(format!("vena-sd-{}.png", std::process::id()));
+        let status = std::process::Command::new("sd")
+            .args(["-m"])
+            .arg(&model)
+            .args([
+                "-p",
+                prompt,
+                "--steps",
+                "20",
+                "-W",
+                &w.to_string(),
+                "-H",
+                &h.to_string(),
+                "-o",
+            ])
+            .arg(&out)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status();
+        match status {
+            Ok(s) if s.success() && out.exists() => {
+                let bytes = std::fs::read(&out)?;
+                let _ = std::fs::remove_file(&out);
+                Ok(Some(bytes))
+            }
+            _ => Ok(None),
+        }
     }
 
     /// POST the user's configured image endpoint (OpenAI-compatible
@@ -226,7 +285,7 @@ fn xml_escape(s: &str) -> String {
         .replace('>', "&gt;")
 }
 
-fn base64_decode(s: &str) -> Result<Vec<u8>> {
+pub(crate) fn base64_decode(s: &str) -> Result<Vec<u8>> {
     // Minimal RFC 4648 decoder — avoids a dependency for one call site.
     const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut rev = [255u8; 256];

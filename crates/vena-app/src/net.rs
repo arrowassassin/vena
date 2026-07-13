@@ -167,6 +167,7 @@ struct GutendexAuthor {
 /// Project Gutenberg via the Gutendex JSON API (§F4b). `page` = real pagination.
 pub fn gutendex_search(
     query: &str,
+    topic: Option<&str>,
     page: u32,
 ) -> Result<
     Vec<(
@@ -177,11 +178,16 @@ pub fn gutendex_search(
         Option<String>,
     )>,
 > {
-    let url = format!(
+    let mut url = format!(
         "https://gutendex.com/books?search={}&page={}",
         urlencode(query),
         page.max(1)
     );
+    if let Some(t) = topic {
+        // Gutendex topic filter (subjects/bookshelves); its default sort is already
+        // by popularity (download count), so an empty search = "most downloaded".
+        url.push_str(&format!("&topic={}", urlencode(t)));
+    }
     assert_allowed(&url, &[])?;
     let resp = client()
         .get(&url)

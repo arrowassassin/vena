@@ -982,7 +982,7 @@ impl AppApi {
 
         // Project Gutenberg (real Gutendex; may be offline-blocked — that's honest).
         if !query.is_empty() {
-            if let Ok(results) = crate::net::gutendex_search(query, 1) {
+            if let Ok(results) = crate::net::gutendex_search(query, None, 1) {
                 for (id, title, author, epub, cover) in results.into_iter().take(20) {
                     items.push(StoreItem {
                         source: "gutenberg".into(),
@@ -1003,10 +1003,16 @@ impl AppApi {
     pub fn store_browse(&self, source: &str, cursor: Option<&str>) -> Result<Vec<StoreItem>> {
         match source {
             "gutenberg" => {
-                let results = crate::net::gutendex_search(
-                    "",
-                    cursor.and_then(|c| c.parse().ok()).unwrap_or(1),
-                )?;
+                // cursor forms: None (popular p.1), "2" (page), "mystery@1" (topic@page).
+                let (topic, page) = match cursor {
+                    Some(c) if c.contains('@') => {
+                        let (t, p) = c.split_once('@').unwrap();
+                        (Some(t.to_string()), p.parse().unwrap_or(1))
+                    }
+                    Some(c) => (None, c.parse().unwrap_or(1)),
+                    None => (None, 1),
+                };
+                let results = crate::net::gutendex_search("", topic.as_deref(), page)?;
                 Ok(results
                     .into_iter()
                     .map(|(id, title, author, epub, cover)| StoreItem {
@@ -1482,4 +1488,183 @@ impl AppApi {
             },
         )
     }
+}
+
+// ============================ Paint Engine (local image models) ============================
+
+/// Local paint tiers (§11.4 images): stable-diffusion.cpp GGUF weights, downloaded
+/// like the voice tiers — no API key needed. Rendering uses the sd.cpp `sd` CLI when
+/// present; with weights but no engine the status says so honestly.
+pub const PAINT_TIERS: &[(&str, &str, &str, &str, f32)] = &[
+    // (id, brand, hf_repo, hf_file, size_gb)
+    (
+        "sketch",
+        "SKETCH·1.5",
+        "second-state/stable-diffusion-v1-5-GGUF",
+        "stable-diffusion-v1-5-pruned-emaonly-Q8_0.gguf",
+        2.0,
+    ),
+    (
+        "easel",
+        "EASEL·XL",
+        "second-state/stable-diffusion-xl-base-1.0-GGUF",
+        "sd_xl_base_1.0-Q8_0.gguf",
+        3.6,
+    ),
+];
+
+impl AppApi {
+    /// The paint tier catalog for the Settings panel.
+    pub fn paint_tiers(&self) -> serde_json::Value {
+        let installed = self.installed_paint_model();
+        serde_json::json!(PAINT_TIERS
+            .iter()
+            .map(|(id, brand, _repo, file, size)| serde_json::json!({
+                "id": id, "brand": brand, "size_gb": size,
+                "installed": installed.as_deref() == Some(*file),
+            }))
+            .collect::<Vec<_>>())
+    }
+
+    /// Download a paint tier's GGUF (resumable, SHA-verified from the HF LFS pointer,
+    /// same plumbing as the voice tiers) into models/paint/.
+    pub fn download_paint_model(
+        &self,
+        tier: &str,
+        mut on_progress: impl FnMut(u32),
+    ) -> Result<serde_json::Value> {
+        let (_, brand, repo, file, _) = PAINT_TIERS
+            .iter()
+            .find(|(id, brand, ..)| *id == tier || *brand == tier)
+            .ok_or_else(|| VenaError::Other(format!("unknown paint tier {tier}")))?;
+        let dir = self.data_dir.join("models/paint");
+        std::fs::create_dir_all(&dir)?;
+        let pointer_url = format!("https://huggingface.co/{repo}/raw/main/{file}");
+        let pointer = reqwest::blocking::get(&pointer_url)
+            .and_then(|r| r.text())
+            .map_err(|e| VenaError::Other(format!("fetching LFS pointer: {e}")))?;
+        let expected = pointer
+            .lines()
+            .find_map(|l| l.strip_prefix("oid sha256:"))
+            .map(str::trim)
+            .map(str::to_string);
+        let url = format!("https://huggingface.co/{repo}/resolve/main/{file}?download=true");
+        crate::net::download_file_verified(
+            &url,
+            &dir.join(file),
+            expected.as_deref(),
+            &[],
+            &mut on_progress,
+        )?;
+        Ok(serde_json::json!({ "brand": brand, "engine_present": sd_cli_present() }))
+    }
+
+    fn installed_paint_model(&self) -> Option<String> {
+        let dir = self.data_dir.join("models/paint");
+        std::fs::read_dir(dir).ok()?.flatten().find_map(|e| {
+            let n = e.file_name().to_string_lossy().to_string();
+            n.ends_with(".gguf").then_some(n)
+        })
+    }
+
+    /// The installed paint weights + whether the sd.cpp engine binary is available —
+    /// used by images.rs tier 2 and reported by get_image_status.
+    pub(crate) fn local_paint(&self) -> Option<(PathBuf, bool)> {
+        let file = self.installed_paint_model()?;
+        Some((
+            self.data_dir.join("models/paint").join(file),
+            sd_cli_present(),
+        ))
+    }
+
+    // ============================ Comics (F5c reading) ============================
+
+    /// Number of real page images available for a comic book (0 for prose).
+    pub fn get_manga_pages(&self, book_id: i64) -> Result<serde_json::Value> {
+        let book = self.store().get_book(book_id)?;
+        let dir = self.assets_dir()?.join("manga").join(&book.slug);
+        let count = std::fs::read_dir(&dir)
+            .map(|d| d.flatten().count())
+            .unwrap_or(0);
+        Ok(serde_json::json!({ "count": count, "profile": book.profile }))
+    }
+
+    /// One page image, base64 (lazy — the UI builds a data: URI per page on demand).
+    pub fn get_manga_page(&self, book_id: i64, page: i64) -> Result<serde_json::Value> {
+        let book = self.store().get_book(book_id)?;
+        let dir = self.assets_dir()?.join("manga").join(&book.slug);
+        let entry = std::fs::read_dir(&dir)?
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| p.is_file())
+            .collect::<std::collections::BTreeSet<_>>()
+            .into_iter()
+            .nth((page.max(1) - 1) as usize)
+            .ok_or_else(|| VenaError::NotFound(format!("page {page}")))?;
+        let bytes = std::fs::read(&entry)?;
+        let mime = match entry.extension().and_then(|e| e.to_str()) {
+            Some("png") => "image/png",
+            Some("webp") => "image/webp",
+            Some("gif") => "image/gif",
+            _ => "image/jpeg",
+        };
+        Ok(serde_json::json!({ "mime": mime, "data": base64_encode(&bytes) }))
+    }
+
+    /// Browser-upload import: the webview can't hand us a filesystem path, so the UI
+    /// posts the file's bytes; we persist them under imports/ and run the SAME import
+    /// pipeline (Tauri uses the native dialog + import_book instead).
+    pub fn import_book_data(
+        &self,
+        name: &str,
+        data_b64: &str,
+        on_progress: impl FnMut(u32, &str),
+    ) -> Result<BookMeta> {
+        let safe = Path::new(name)
+            .file_name()
+            .and_then(|s| s.to_str())
+            .filter(|s| !s.contains(".."))
+            .ok_or_else(|| VenaError::Other("bad file name".into()))?;
+        let dir = self.data_dir.join("imports");
+        std::fs::create_dir_all(&dir)?;
+        let path = dir.join(safe);
+        std::fs::write(&path, crate::images::base64_decode(data_b64)?)?;
+        self.import_book(&path.to_string_lossy(), on_progress)
+    }
+}
+
+fn sd_cli_present() -> bool {
+    // stable-diffusion.cpp ships the `sd` CLI; PATH probe keeps this dependency-free.
+    std::process::Command::new("sd")
+        .arg("--help")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|s| s.success() || s.code().is_some())
+        .unwrap_or(false)
+}
+
+fn base64_encode(bytes: &[u8]) -> String {
+    const T: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for chunk in bytes.chunks(3) {
+        let b = [
+            chunk[0],
+            *chunk.get(1).unwrap_or(&0),
+            *chunk.get(2).unwrap_or(&0),
+        ];
+        out.push(T[(b[0] >> 2) as usize] as char);
+        out.push(T[(((b[0] & 3) << 4) | (b[1] >> 4)) as usize] as char);
+        out.push(if chunk.len() > 1 {
+            T[(((b[1] & 15) << 2) | (b[2] >> 6)) as usize] as char
+        } else {
+            '='
+        });
+        out.push(if chunk.len() > 2 {
+            T[(b[2] & 63) as usize] as char
+        } else {
+            '='
+        });
+    }
+    out
 }

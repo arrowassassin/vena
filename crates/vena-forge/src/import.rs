@@ -54,6 +54,7 @@ pub fn import_path(path: &Path) -> Result<ImportedBook> {
         .as_deref()
     {
         Some("epub") => import_epub(path),
+        Some("cbz") => import_cbz(path),
         Some("txt") | Some("text") | Some("md") | Some("markdown") | None => {
             let raw = std::fs::read_to_string(path)?;
             let (title, author) = (
@@ -496,4 +497,84 @@ fn html_unescape(s: &str) -> String {
         .replace("&#39;", "'")
         .replace("&rsquo;", "\u{2019}")
         .replace("&nbsp;", " ")
+}
+
+/// CBZ (comics) import — F5c reading half. Pages are extracted to
+/// `$VENA_ASSET_DIR/manga/<file-stem>/NNNN.<ext>` (served lazily to the UI via
+/// `get_manga_page`); each page becomes one "episode" so progress mechanics work
+/// unchanged. No prose ⇒ no ledger; the manual-progress companion applies.
+pub fn import_cbz(path: &Path) -> Result<ImportedBook> {
+    let stem = path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("comic")
+        .to_string();
+    let assets = std::env::var("VENA_ASSET_DIR")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|_| std::env::temp_dir().join("vena-assets"));
+    let slug_dir = assets.join("manga").join(slug_of(&stem));
+    std::fs::create_dir_all(&slug_dir)?;
+
+    let f = std::fs::File::open(path)?;
+    let mut zip = zip::ZipArchive::new(f)?;
+    // Collect image entries in name order (standard CBZ page ordering).
+    let mut names: Vec<String> = (0..zip.len())
+        .filter_map(|i| zip.by_index(i).ok().map(|e| e.name().to_string()))
+        .filter(|n| {
+            let l = n.to_ascii_lowercase();
+            !n.ends_with('/')
+                && (l.ends_with(".jpg")
+                    || l.ends_with(".jpeg")
+                    || l.ends_with(".png")
+                    || l.ends_with(".webp")
+                    || l.ends_with(".gif"))
+        })
+        .collect();
+    names.sort();
+    if names.is_empty() {
+        anyhow::bail!("no image pages found in CBZ");
+    }
+
+    let mut chapters = Vec::new();
+    for (i, name) in names.iter().enumerate() {
+        let ext = name
+            .rsplit('.')
+            .next()
+            .unwrap_or("jpg")
+            .to_ascii_lowercase();
+        let mut entry = zip.by_name(name)?;
+        let mut buf = Vec::new();
+        std::io::Read::read_to_end(&mut entry, &mut buf)?;
+        std::fs::write(slug_dir.join(format!("{:04}.{ext}", i + 1)), &buf)?;
+        chapters.push(Chapter {
+            seq: (i + 1) as i64,
+            title: Some(format!("Page {}", i + 1)),
+            // Marker paragraph; the UI renders the real page via get_manga_page.
+            paragraphs: vec![format!("[comic page {}]", i + 1)],
+        });
+    }
+
+    Ok(ImportedBook {
+        title: stem.replace(['_', '-'], " "),
+        author: None,
+        chapters,
+        cover: None,
+        cover_name: None,
+        profile: "comic".into(),
+        profile_evidence: format!(
+            "cbz · {} pages · no prose (companion is manual-progress)",
+            names.len()
+        ),
+    })
+}
+
+fn slug_of(s: &str) -> String {
+    s.to_lowercase()
+        .chars()
+        .map(|c| if c.is_alphanumeric() { c } else { '-' })
+        .collect::<String>()
+        .split('-')
+        .filter(|p| !p.is_empty())
+        .collect::<Vec<_>>()
+        .join("-")
 }
