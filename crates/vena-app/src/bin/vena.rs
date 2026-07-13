@@ -527,6 +527,13 @@ fn main() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_notification::init())
         .setup(|app| {
+            // Point the first-run seeder at the bundled Dracula package. Tauri places
+            // resources in a platform-specific dir (macOS: Contents/Resources/, NOT
+            // next to the exe), so resolve it explicitly rather than guessing from the
+            // binary path — otherwise the default reference book wouldn't ship.
+            if let Ok(res) = app.path().resource_dir() {
+                std::env::set_var("VENA_PACKAGES_DIR", res.join("packages"));
+            }
             let data_dir = app.path().app_data_dir().expect("app data dir");
             let api = AppApi::new(data_dir, Box::new(KeychainStore)).expect("open profile");
             app.manage(Arc::new(api));

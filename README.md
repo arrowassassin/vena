@@ -64,13 +64,47 @@ docs/                 System design + canonical design files.
 schema.sql            The ledger schema (Appendix A).
 ```
 
+## Try it on a Mac
+
+**The shelf is never empty:** *Dracula* (fully forged — 27 chapters, sealed ledger) ships
+as the built-in reference book and imports itself on first run, so you can read, chat,
+run the gate probes, and browse the Archive immediately. To talk to the cast you also
+configure a model (Settings → The Voice Engine → Cloud Relay → pick a provider, paste a
+key — one tap), but everything non-AI works out of the box.
+
+Prereqs: [Rust](https://rustup.rs) and [Node 18+](https://nodejs.org). macOS already has
+the WebKit runtime Tauri needs — no extra system packages.
+
+**Fastest — the browser dev path (no Tauri toolchain):**
+
+```bash
+git clone https://github.com/arrowassassin/vena && cd vena
+node ui-dc/build.mjs                       # assemble the UI (once, and after UI edits)
+cargo run -p vena-app --bin vena-devserver # starts the REAL engine on :5714
+# open http://127.0.0.1:5714  → Dracula is already on the shelf
+```
+
+That one process is *both* backend and frontend: the Rust engine serves the UI and the
+`/api` command surface (no mocks). It picks a small-window layout automatically; append
+`/mobile.html` to force the 5-tab phone UI.
+
+**The real desktop app (Tauri 2 — a native `.app`):**
+
+```bash
+cargo run  -p vena-app --features tauri --bin vena     # dev run (hot window)
+cargo build -p vena-app --features tauri --release     # or a distributable bundle
+```
+
+The bundle embeds `dracula.vena`, so the installed app also opens with Dracula on the
+shelf. (First `--features tauri` build pulls the Tauri crates; give it a few minutes.)
+
 ## Building
 
 Everything except the Tauri shell builds with plain cargo:
 
 ```bash
 cargo build            # all crates; the Tauri binary is skipped by default
-cargo test             # full suite (23 tests, incl. a real forge round-trip)
+cargo test             # full suite (33 tests, incl. a real forge round-trip)
 ```
 
 **The shipped desktop binary** (Tauri 2; needs a desktop toolchain — on Linux
