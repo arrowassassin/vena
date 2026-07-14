@@ -1014,6 +1014,7 @@ impl AppApi {
             "cloud_base_url": self.setting_or(&store, K_CLOUD_BASE, ""),
             "cloud_model": self.setting_or(&store, K_CLOUD_MODEL, ""),
             "local_model": self.setting_or(&store, K_LOCAL_MODEL, ""),
+            "onboarded": self.setting_bool_locked(&store, "onboarded", false),
             "local_ready": self.setting_bool_locked(&store, K_LOCAL_READY, false),
             // per-tier install state comes from the weights actually on disk,
             // so every downloaded tier (not just the last one) shows as such.

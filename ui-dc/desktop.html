@@ -2802,6 +2802,7 @@ class Component extends DCLogic {
     this._venaComicsShelfDom();
     this._venaModelDelDom();
     this._venaReaderA11y();
+    this._venaOnboardDom();
     // chat threads belong to a book: any book switch drops old hydration
     if (this._chatBook !== this.state.book) {
       this._chatBook = this.state.book;
@@ -2938,9 +2939,104 @@ class Component extends DCLogic {
     });
   };
 
+
+  /* ---------------- first-run welcome stepper ----------------
+   * Injected overlay, shown once per profile (backend setting 'onboarded').
+   * Every step is skippable; downloads keep running if the reader moves on. */
+  P._venaOnboardAct = function (a) {
+    if (a === 'skip' || a === 'finish') {
+      V.call('set_setting', { key: 'onboarded', value: '1' }).catch(() => {});
+      this.setState({ onboardStep: null, screen: a === 'finish' ? 'companion' : this.state.screen });
+      if (a === 'finish') this._toast('DRACULA IS ON YOUR SHELF, PRE-FORGED — SAY HELLO TO THE CAST');
+      return;
+    }
+    if (a === 'next') { this.setState({ onboardStep: Math.min(4, (this.state.onboardStep | 0) + 1) }); return; }
+    if (a === 'back') { this.setState({ onboardStep: Math.max(0, (this.state.onboardStep | 0) - 1) }); return; }
+    if (a === 'dl-ink') this._startDl('ink');
+    else if (a === 'dl-quill') this._startDl('quill');
+    else if (a === 'dl-sketch') this._startPaintDl('sketch');
+    else if (a === 'dl-easel') this._startPaintDl('easel');
+    else if (a.indexOf('gate-') === 0) {
+      const m = a.slice(5);
+      this.setState({ strict: m });
+      V.call('set_setting', { key: 'gate_mode', value: m }).catch(() => {});
+    } else if (a.indexOf('theme-') === 0) {
+      const t = a.slice(6);
+      this.setState({ theme: t });
+      V.call('set_setting', { key: 'theme', value: t }).catch(() => {});
+    }
+  };
+
+  P._venaOnboardDom = function () {
+    const step = this.state.onboardStep;
+    let ov = document.querySelector('[data-vena-onboard]');
+    if (step == null) { if (ov) ov.remove(); return; }
+    if (!ov) {
+      ov = document.createElement('div');
+      ov.setAttribute('data-vena-onboard', '1');
+      ov.setAttribute('role', 'dialog');
+      ov.setAttribute('aria-label', 'Welcome to Vena — first-run setup');
+      ov.style.cssText = 'position:fixed;inset:0;z-index:200;background:rgba(20,16,20,.62);display:flex;align-items:center;justify-content:center;padding:20px';
+      ov.addEventListener('click', e => {
+        const el = e.target && e.target.closest ? e.target.closest('[data-ob]') : null;
+        if (el) this._venaOnboardAct(el.getAttribute('data-ob'));
+      });
+      document.body.appendChild(ov);
+    }
+    const mono = "font-family:'IBM Plex Mono',monospace;letter-spacing:.08em;";
+    const btn = (act, label, primary) => '<button data-ob="' + act + '" style="' +
+      (primary ? "background:#d83a2c;color:#fff;border:none;box-shadow:3px 3px 0 #141014;"
+               : "background:none;border:2px solid #141014;color:#141014;") +
+      "padding:10px 16px;font-family:'Anton',sans-serif;font-size:13px;letter-spacing:.06em;cursor:pointer\">" + label + "</button>";
+    const chip = (act, label, on) => '<button data-ob="' + act + '" style="background:' + (on ? '#141014' : 'none') + ';color:' + (on ? '#f6f3ec' : '#141014') + ';border:2px solid #141014;padding:7px 12px;' + mono + 'font-size:9px;font-weight:600;cursor:pointer">' + label + '</button>';
+    const dlRow = (act, brand, size, desc, dl, tier, installed) => {
+      const busy = dl.status === 'downloading' && dl.tier === tier;
+      return '<div style="border:2.5px solid #141014;padding:12px 14px;margin-top:10px;display:flex;align-items:center;gap:12px">' +
+        '<div style="flex:1"><div style="font-family:\'Anton\',sans-serif;font-size:14px">' + brand + ' <span style="' + mono + 'font-size:8px;color:#8a8286">' + size + '</span></div>' +
+        '<div style="font-family:\'Source Serif 4\',serif;font-size:11.5px;color:#5c5458;margin-top:2px">' + desc + '</div>' +
+        (busy ? '<div style="height:8px;border:2px solid #141014;margin-top:6px;position:relative"><div style="position:absolute;left:0;top:0;bottom:0;background:#2f9d95;width:' + (dl.pct | 0) + '%"></div></div>' : '') +
+        '</div>' +
+        (installed ? '<span style="' + mono + 'font-size:9px;color:#2f9d95;font-weight:600">INSTALLED ✓</span>'
+          : busy ? '<span style="' + mono + 'font-size:9px;color:#8a8286">' + ((dl.pct | 0) >= 99 ? 'VERIFYING…' : (dl.pct | 0) + '%') + '</span>'
+            : btn(act, 'DOWNLOAD', false)) + '</div>';
+    };
+    const S = this._vena.settings || {};
+    const tiers = S.tiers || [];
+    const inst = id => !!(tiers.find(t => t.id === id) || {}).installed;
+    const pinst = id => !!((this._vena.paintTiers || []).find(t => t.id === id) || {}).installed;
+    const st = this.state;
+    const bodies = [
+      '<p style="font-family:\'Source Serif 4\',serif;font-size:14px;line-height:1.7;color:#5c5458">Vena is a <b>spoiler-safe reading companion</b>. Your books, your notes and every conversation live on <b>this device</b> — no account, no telemetry, nothing leaves it. Dracula is already on your shelf, pre-forged and ready to chat.</p>' +
+      '<p style="font-family:\'Source Serif 4\',serif;font-size:14px;line-height:1.7;color:#5c5458;margin-top:10px">Every reply from a character is <b>gated to your bookmark</b>: they only know what you have read. That is the whole point.</p>',
+      '<p style="font-family:\'Source Serif 4\',serif;font-size:14px;line-height:1.7;color:#5c5458">Each book is forged into a <b>ledger</b> of chapter-stamped facts. Before a character speaks, the gate strips everything past your bookmark; after they speak, a verifier checks the reply — anything that slips is <b style="color:#d83a2c">INKED OUT</b> before it reaches you. If something still feels spoilery, tap <b>REPORT A LEAK</b>.</p>' +
+      '<div style="display:flex;gap:8px;margin-top:14px">' + chip('gate-strict', 'STRICT', st.strict === 'strict') + chip('gate-standard', 'STANDARD', st.strict === 'standard' || !st.strict) + chip('gate-relaxed', 'RELAXED', st.strict === 'relaxed') + '</div>' +
+      '<p style="' + mono + 'font-size:8.5px;color:#8a8286;margin-top:8px">STANDARD REPAIRS BORDERLINE REPLIES · STRICT REDACTS THEM OUTRIGHT</p>',
+      '<p style="font-family:\'Source Serif 4\',serif;font-size:14px;line-height:1.7;color:#5c5458">Characters need a voice. Download a model and it runs <b>inside the app, on this device</b> — or skip and add a Cloud Relay key in Settings later.</p>' +
+      dlRow('dl-ink', 'INK·3B', '1.9 GB', 'Fast and sure-footed — chat, recaps, theory checks.', st.dl || {}, 'ink', inst('ink')) +
+      dlRow('dl-quill', 'QUILL·7B', '4.6 GB', 'Richer, more period-true voices. Worth it for chat.', st.dl || {}, 'quill', inst('quill')),
+      '<p style="font-family:\'Source Serif 4\',serif;font-size:14px;line-height:1.7;color:#5c5458">The paint engine draws <b>book covers and character portraits</b> on this device, and refreshes them as you read deeper. Every image is stamped ✦ AI — art is an overlay, never canon. Optional.</p>' +
+      dlRow('dl-sketch', 'SKETCH·1.5', '2.0 GB', 'Quick covers and portraits.', st.paintDl || {}, 'sketch', pinst('sketch')) +
+      dlRow('dl-easel', 'EASEL·XL', '4.3 GB', 'Richer paint, heavier download.', st.paintDl || {}, 'easel', pinst('easel')),
+      '<p style="font-family:\'Source Serif 4\',serif;font-size:14px;line-height:1.7;color:#5c5458">Pick a light to read by — you can change it any time from the top bar.</p>' +
+      '<div style="display:flex;gap:8px;margin-top:14px;flex-wrap:wrap">' + chip('theme-light', '☀ DAY', st.theme === 'light' || !st.theme) + chip('theme-sepia', '▤ SEPIA', st.theme === 'sepia') + chip('theme-dark', '☾ NIGHT', st.theme === 'dark') + chip('theme-oled', '● OLED', st.theme === 'oled') + '</div>' +
+      '<p style="font-family:\'Source Serif 4\',serif;font-size:14px;line-height:1.7;color:#5c5458;margin-top:14px">That\u2019s it. Open the companion and say hello to Jonathan Harker — he only knows Chapter I, and so should you.</p>'
+    ];
+    const titles = ['WELCOME TO VENA', 'THE SPOILER GATE', 'THE VOICE ENGINE', 'THE PAINT ENGINE', 'READY TO READ'];
+    const dots = titles.map((_, i) => '<span style="width:10px;height:10px;display:inline-block;margin-right:6px;background:' + (i === step ? '#d83a2c' : i < step ? '#141014' : '#8a8286') + '"></span>').join('');
+    ov.innerHTML = '<div style="background:#f6f3ec;color:#141014;border:3px solid #141014;box-shadow:8px 8px 0 rgba(0,0,0,.35);max-width:640px;width:100%;max-height:86vh;overflow:auto;padding:26px 28px">' +
+      '<div style="display:flex;align-items:baseline;justify-content:space-between"><span style="' + mono + 'font-size:8.5px;color:#8a8286">FIRST-RUN SETUP · STEP ' + (step + 1) + ' OF 5</span><button data-ob="skip" style="background:none;border:none;' + mono + 'font-size:9px;color:#8a8286;cursor:pointer;text-decoration:underline">SKIP SETUP</button></div>' +
+      '<h2 style="font-family:\'Anton\',sans-serif;font-size:26px;letter-spacing:.03em;margin:10px 0 12px">' + titles[step] + '</h2>' +
+      bodies[step] +
+      '<div style="display:flex;align-items:center;justify-content:space-between;margin-top:22px"><div>' + dots + '</div><div style="display:flex;gap:10px">' +
+      (step > 0 ? btn('back', '← BACK', false) : '') +
+      (step < 4 ? btn('next', 'NEXT →', true) : btn('finish', 'BEGIN READING →', true)) +
+      '</div></div></div>';
+  };
+
   P._loadSettings = function () {
     V.call('get_settings').then(s => {
       this._vena.settings = s;
+      if (!s.onboarded && this.state.onboardStep == null) this.setState({ onboardStep: 0 });
       this.setState({
         strict: s.gate_mode || 'standard',
         tglFates: !!s.guard_fates,

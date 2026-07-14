@@ -173,6 +173,7 @@
       var brandToId = {};
       (s.tiers || []).forEach(function (t) { brandToId[t.brand] = t.id; });
       var installedId = s.local_ready ? brandToId[s.local_model] : null;
+      if (!s.onboarded && self.state.onboardStep == null) self.setState({ onboardStep: 0 });
       var upd = {
         strict: s.gate_mode || "standard",
         tglStamps: !!s.show_engine_stamps,
@@ -353,6 +354,103 @@
       chats[charId] = items.concat(chats[charId] || []);
       self.setState({ chats: chats });
     }).catch(function () { self._histLoaded[key] = false; });
+  };
+
+
+  // ------------------------------- first-run welcome stepper (parity w/ desktop)
+  P._onboardAct = function (a) {
+    var self = this;
+    if (a === "skip" || a === "finish") {
+      V.call("set_setting", { key: "onboarded", value: "1" }).catch(function () {});
+      this.setState({ onboardStep: null });
+      if (a === "finish") this._toast("DRACULA IS ON YOUR SHELF, PRE-FORGED — SAY HELLO TO THE CAST");
+      return;
+    }
+    if (a === "next") { this.setState({ onboardStep: Math.min(4, (this.state.onboardStep | 0) + 1) }); return; }
+    if (a === "back") { this.setState({ onboardStep: Math.max(0, (this.state.onboardStep | 0) - 1) }); return; }
+    if (a === "dl-ink") this._startDl("ink");
+    else if (a === "dl-quill") this._startDl("quill");
+    else if (a === "dl-sketch") this._startPaintDl("sketch");
+    else if (a === "dl-easel") this._startPaintDl("easel");
+    else if (a.indexOf("gate-") === 0) {
+      var g = a.slice(5);
+      this.setState({ strict: g });
+      V.call("set_setting", { key: "gate_mode", value: g }).catch(function () {});
+    } else if (a.indexOf("theme-") === 0) {
+      var t = a.slice(6);
+      this.setState({ theme: t });
+      V.call("set_setting", { key: "theme", value: t }).catch(function () {});
+    }
+  };
+
+  P._applyOnboard = function () {
+    var self = this;
+    var step = this.state.onboardStep;
+    var ov = document.querySelector("[data-vena-onboard]");
+    if (step == null) { if (ov) ov.remove(); return; }
+    if (!ov) {
+      ov = document.createElement("div");
+      ov.setAttribute("data-vena-onboard", "1");
+      ov.setAttribute("role", "dialog");
+      ov.setAttribute("aria-label", "Welcome to Vena — first-run setup");
+      ov.style.cssText = "position:fixed;inset:0;z-index:200;background:rgba(20,16,20,.62);display:flex;align-items:flex-end;justify-content:center";
+      ov.addEventListener("click", function (e) {
+        var el = e.target && e.target.closest ? e.target.closest("[data-ob]") : null;
+        if (el) self._onboardAct(el.getAttribute("data-ob"));
+      });
+      document.body.appendChild(ov);
+    }
+    var mono = "font-family:'IBM Plex Mono',monospace;letter-spacing:.08em;";
+    function btn(act, label, primary) {
+      return '<button data-ob="' + act + '" style="' +
+        (primary ? "background:#d83a2c;color:#fff;border:none;box-shadow:3px 3px 0 #141014;" : "background:none;border:2px solid #141014;color:#141014;") +
+        "padding:12px 16px;font-family:'Anton',sans-serif;font-size:13px;letter-spacing:.06em;cursor:pointer;min-height:44px\">" + label + "</button>";
+    }
+    function chip(act, label, on) {
+      return '<button data-ob="' + act + '" style="background:' + (on ? "#141014" : "none") + ";color:" + (on ? "#f6f3ec" : "#141014") + ";border:2px solid #141014;padding:10px 12px;" + mono + 'font-size:9px;font-weight:600;cursor:pointer;min-height:40px">' + label + "</button>";
+    }
+    function dlRow(act, brand, size, desc, dl, tier, installed) {
+      var busy = dl.status === "downloading" && dl.tier === tier;
+      return '<div style="border:2.5px solid #141014;padding:11px 12px;margin-top:10px;display:flex;align-items:center;gap:10px">' +
+        '<div style="flex:1"><div style="font-family:\'Anton\',sans-serif;font-size:13px">' + brand + ' <span style="' + mono + 'font-size:7.5px;color:#8a8286">' + size + "</span></div>" +
+        '<div style="font-family:\'Source Serif 4\',serif;font-size:11px;color:#5c5458;margin-top:2px">' + desc + "</div>" +
+        (busy ? '<div style="height:8px;border:2px solid #141014;margin-top:6px;position:relative"><div style="position:absolute;left:0;top:0;bottom:0;background:#2f9d95;width:' + (dl.pct | 0) + '%"></div></div>' : "") +
+        "</div>" +
+        (installed ? '<span style="' + mono + 'font-size:8.5px;color:#2f9d95;font-weight:600">INSTALLED ✓</span>'
+          : busy ? '<span style="' + mono + 'font-size:8.5px;color:#8a8286">' + ((dl.pct | 0) >= 99 ? "VERIFYING…" : (dl.pct | 0) + "%") + "</span>"
+            : btn(act, "GET", false)) + "</div>";
+    }
+    var st = this.state;
+    var s = this._settings || {};
+    function inst(id) { var t = (s.tiers || []).filter(function (x) { return x.id === id; })[0]; return !!(t && t.installed); }
+    function pinst(id) { var t = (self._paintTiers || []).filter(function (x) { return x.id === id; })[0]; return !!(t && t.installed); }
+    var titles = ["WELCOME TO VENA", "THE SPOILER GATE", "THE VOICE ENGINE", "THE PAINT ENGINE", "READY TO READ"];
+    var serif = "font-family:'Source Serif 4',serif;font-size:13px;line-height:1.65;color:#5c5458";
+    var bodies = [
+      '<p style="' + serif + '">Vena is a <b>spoiler-safe reading companion</b>. Your books and every conversation live on <b>this device</b> — no account, no telemetry. Dracula is already on your shelf, pre-forged and ready to chat.</p><p style="' + serif + ';margin-top:8px">Every character reply is <b>gated to your bookmark</b>: they only know what you have read.</p>',
+      '<p style="' + serif + '">Before a character speaks, the gate strips everything past your bookmark; a verifier checks each reply and anything that slips is <b style="color:#d83a2c">INKED OUT</b>. Feel a spoiler anyway? Tap <b>REPORT A LEAK</b>.</p>' +
+        '<div style="display:flex;gap:8px;margin-top:12px;flex-wrap:wrap">' + chip("gate-strict", "STRICT", st.strict === "strict") + chip("gate-standard", "STANDARD", st.strict === "standard" || !st.strict) + chip("gate-relaxed", "RELAXED", st.strict === "relaxed") + "</div>",
+      '<p style="' + serif + '">Characters need a voice. Download a model — it runs <b>inside the app</b> — or add a Cloud Relay key in Settings later.</p>' +
+        dlRow("dl-ink", "INK·3B", "1.9 GB", "Fast and sure-footed.", st.dl || {}, "ink", inst("ink")) +
+        dlRow("dl-quill", "QUILL·7B", "4.6 GB", "Richer, period-true voices.", st.dl || {}, "quill", inst("quill")),
+      '<p style="' + serif + '">The paint engine draws <b>covers and portraits</b> on-device and refreshes them as you read. Every image is stamped ✦ AI. Optional.</p>' +
+        dlRow("dl-sketch", "SKETCH·1.5", "2.0 GB", "Quick covers and portraits.", st.paintDl || {}, "sketch", pinst("sketch")) +
+        dlRow("dl-easel", "EASEL·XL", "4.3 GB", "Richer paint.", st.paintDl || {}, "easel", pinst("easel")),
+      '<p style="' + serif + '">Pick a light to read by — changeable any time.</p>' +
+        '<div style="display:flex;gap:8px;margin-top:12px;flex-wrap:wrap">' + chip("theme-light", "☀ DAY", st.theme === "light" || !st.theme) + chip("theme-sepia", "▤ SEPIA", st.theme === "sepia") + chip("theme-dark", "☾ NIGHT", st.theme === "dark") + chip("theme-oled", "● OLED", st.theme === "oled") + "</div>" +
+        '<p style="' + serif + ';margin-top:12px">Open the companion and say hello to Jonathan Harker — he only knows Chapter I, and so should you.</p>'
+    ];
+    var dots = titles.map(function (_, i) {
+      return '<span style="width:9px;height:9px;display:inline-block;margin-right:5px;background:' + (i === step ? "#d83a2c" : i < step ? "#141014" : "#8a8286") + '"></span>';
+    }).join("");
+    ov.innerHTML = '<div style="background:#f6f3ec;color:#141014;border:3px solid #141014;border-bottom:none;box-shadow:0 -6px 0 rgba(0,0,0,.3);width:100%;max-height:88vh;overflow:auto;padding:20px 18px 30px">' +
+      '<div style="display:flex;align-items:baseline;justify-content:space-between"><span style="' + mono + 'font-size:8px;color:#8a8286">FIRST-RUN SETUP · ' + (step + 1) + "/5</span><button data-ob=\"skip\" style=\"background:none;border:none;" + mono + 'font-size:8.5px;color:#8a8286;cursor:pointer;text-decoration:underline;min-height:40px">SKIP</button></div>' +
+      '<h2 style="font-family:\'Anton\',sans-serif;font-size:22px;letter-spacing:.03em;margin:6px 0 10px">' + titles[step] + "</h2>" +
+      bodies[step] +
+      '<div style="display:flex;align-items:center;justify-content:space-between;margin-top:18px"><div>' + dots + '</div><div style="display:flex;gap:8px">' +
+      (step > 0 ? btn("back", "← BACK", false) : "") +
+      (step < 4 ? btn("next", "NEXT →", true) : btn("finish", "BEGIN →", true)) +
+      "</div></div></div>";
   };
 
   P._send = function (forcedText) {
@@ -851,6 +949,7 @@
     this._applyMangaPages();
     this._applyModelDel();
     this._applyReaderA11y();
+    this._applyOnboard();
     // chat threads belong to a book: switching books (any path, including the
     // design's own cover taps) drops the hydrated threads of the old one
     if (this._chatBook !== this.state.book) {
