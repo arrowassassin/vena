@@ -30,3 +30,17 @@ tempfile = "3"
 
 [profile.release]
 lto = true
+
+# Debug builds (cargo run without --release) must still hash and unzip at full
+# speed: SHA-256 over a 4.6 GB model at debug opt-level takes MINUTES and reads
+# as a hung VERIFYING bar. Crypto/compression hot loops get optimized always.
+[profile.dev.package.sha2]
+opt-level = 3
+[profile.dev.package.digest]
+opt-level = 3
+[profile.dev.package.zip]
+opt-level = 3
+[profile.dev.package.miniz_oxide]
+opt-level = 3
+[profile.dev.package.flate2]
+opt-level = 3

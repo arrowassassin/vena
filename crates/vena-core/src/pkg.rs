@@ -42,6 +42,31 @@ pub fn write_vena(
     Ok(crate::hash::sha256_hex(&std::fs::read(out_vena_path)?))
 }
 
+/// Read a package's story metadata WITHOUT importing it — drives the store's
+/// FEATURED shelf, so every bundled package self-describes instead of being
+/// hardcoded. Returns (slug, title, author, license).
+pub fn peek_vena(vena_path: &Path) -> Result<(String, String, Option<String>, String)> {
+    let tmp = tempfile::tempdir()?;
+    let db_path = tmp.path().join("package.db");
+    {
+        let f = std::fs::File::open(vena_path)?;
+        let mut archive =
+            zip::ZipArchive::new(f).map_err(|e| VenaError::InvalidPackage(e.to_string()))?;
+        let mut entry = archive
+            .by_name("package.db")
+            .map_err(|_| VenaError::InvalidPackage("missing package.db".into()))?;
+        let mut buf = Vec::new();
+        entry.read_to_end(&mut buf)?;
+        std::fs::write(&db_path, &buf)?;
+    }
+    let pkg = Connection::open(&db_path)?;
+    Ok(pkg.query_row(
+        "SELECT slug,title,author,license FROM story LIMIT 1",
+        [],
+        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+    )?)
+}
+
 /// Import a `.vena` into a profile store under a fresh story_id. Every FK is
 /// remapped (characters, entities, episodes, scenes, facts.known_by, edges).
 /// Returns the new story_id. Schema-validates the package before copying.

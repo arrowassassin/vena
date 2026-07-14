@@ -80,6 +80,22 @@ fn take_cancel(dest: &Path) -> bool {
     cancels().lock().unwrap().remove(dest)
 }
 
+/// In-flight registry: a destination can only be downloaded by ONE worker at a
+/// time. A page refresh forgets the UI's downloading state — clicking RESUME
+/// while the first worker is still streaming/verifying must not race it.
+fn inflight() -> &'static std::sync::Mutex<std::collections::HashSet<std::path::PathBuf>> {
+    static C: std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<std::path::PathBuf>>> =
+        std::sync::OnceLock::new();
+    C.get_or_init(|| std::sync::Mutex::new(std::collections::HashSet::new()))
+}
+
+struct InflightGuard(std::path::PathBuf);
+impl Drop for InflightGuard {
+    fn drop(&mut self) {
+        inflight().lock().unwrap().remove(&self.0);
+    }
+}
+
 /// RESUMABLE streaming download. Partial data lands in `<dest>.part`; re-invocation
 /// continues with a Range request; the file is renamed into place only when complete
 /// (and, when a digest is supplied, SHA-256-verified).
@@ -98,10 +114,23 @@ pub fn download_file_verified(
     if let Some(parent) = dest.parent() {
         std::fs::create_dir_all(parent)?;
     }
+    // One worker per destination — a raced second attempt (page refresh +
+    // RESUME while the first is still verifying) errors honestly instead of
+    // corrupting the .part or 416-ing against its own complete bytes.
+    let _guard = {
+        let mut inf = inflight().lock().unwrap();
+        if !inf.insert(dest.to_path_buf()) {
+            return Err(VenaError::Other(
+                "this download is already running — give it a moment".into(),
+            ));
+        }
+        InflightGuard(dest.to_path_buf())
+    };
     let _ = take_cancel(dest); // clear any stale flag from a finished run
     let part = dest.with_extension("part");
     let already: u64 = std::fs::metadata(&part).map(|m| m.len()).unwrap_or(0);
 
+    let mut bytes_complete = false;
     let mut reqb = dl_client().get(url);
     if already > 0 {
         reqb = reqb.header("Range", format!("bytes={already}-"));
@@ -110,49 +139,57 @@ pub fn download_file_verified(
         .send()
         .map_err(|e| VenaError::Other(format!("download failed: {e}")))?;
     let status = resp.status();
+    // 416 Range Not Satisfiable with a non-empty .part means every byte is
+    // already on disk (an interrupted run that finished streaming but never
+    // verified). Skip straight to the integrity gate instead of failing.
+    if status.as_u16() == 416 && already > 0 {
+        bytes_complete = true;
+    }
     let resuming = status == reqwest::StatusCode::PARTIAL_CONTENT;
-    if !status.is_success() {
-        let hint = if status.as_u16() == 401 || status.as_u16() == 404 {
-            " — the file isn't at the expected Hugging Face path (the repo may have moved)"
+    if !bytes_complete {
+        if !status.is_success() {
+            let hint = if status.as_u16() == 401 || status.as_u16() == 404 {
+                " — the file isn't at the expected Hugging Face path (the repo may have moved)"
+            } else {
+                ""
+            };
+            return Err(VenaError::Other(format!("download HTTP {status}{hint}")));
+        }
+        let remaining = resp.content_length().unwrap_or(0);
+        let total = if resuming {
+            already + remaining
         } else {
-            ""
+            remaining
         };
-        return Err(VenaError::Other(format!("download HTTP {status}{hint}")));
-    }
-    let remaining = resp.content_length().unwrap_or(0);
-    let total = if resuming {
-        already + remaining
-    } else {
-        remaining
-    };
 
-    let mut file = if resuming {
-        std::fs::OpenOptions::new().append(true).open(&part)?
-    } else {
-        std::fs::File::create(&part)?
-    };
-    let mut downloaded: u64 = if resuming { already } else { 0 };
-    let mut buf = [0u8; 64 * 1024];
-    loop {
-        let n = std::io::Read::read(&mut resp, &mut buf)
-            .map_err(|e| VenaError::Other(e.to_string()))?;
-        if n == 0 {
-            break;
+        let mut file = if resuming {
+            std::fs::OpenOptions::new().append(true).open(&part)?
+        } else {
+            std::fs::File::create(&part)?
+        };
+        let mut downloaded: u64 = if resuming { already } else { 0 };
+        let mut buf = [0u8; 64 * 1024];
+        loop {
+            let n = std::io::Read::read(&mut resp, &mut buf)
+                .map_err(|e| VenaError::Other(e.to_string()))?;
+            if n == 0 {
+                break;
+            }
+            file.write_all(&buf[..n])?;
+            downloaded += n as u64;
+            if take_cancel(dest) {
+                return Err(VenaError::Other(
+                    "download stopped — the partial file is kept; RESUME picks up from here".into(),
+                ));
+            }
+            if total > 0 {
+                // bytes stop at 98 — 99 is the SHA-verify phase (hashing a
+                // multi-GB file takes real seconds; the UI shows VERIFYING)
+                on_progress(((downloaded * 100) / total).min(98) as u32);
+            }
         }
-        file.write_all(&buf[..n])?;
-        downloaded += n as u64;
-        if take_cancel(dest) {
-            return Err(VenaError::Other(
-                "download stopped — the partial file is kept; RESUME picks up from here".into(),
-            ));
-        }
-        if total > 0 {
-            // bytes stop at 98 — 99 is the SHA-verify phase (hashing a multi-GB
-            // file takes real time; the UI shows VERIFYING instead of a dead bar)
-            on_progress(((downloaded * 100) / total).min(98) as u32);
-        }
+        drop(file);
     }
-    drop(file);
 
     // Integrity gate: verify BEFORE renaming into place / marking ready.
     on_progress(99);

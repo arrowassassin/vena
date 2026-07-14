@@ -161,11 +161,7 @@ impl AppApi {
         }
         // Also seed any bundled comics (.cbz) — e.g. the sample comic, or a
         // user-fetched Little Nemo (scripts/fetch-nemo.sh drops it here).
-        for dir in bundled_packages()
-            .iter()
-            .filter_map(|p| p.parent().map(std::path::Path::to_path_buf))
-            .collect::<std::collections::BTreeSet<_>>()
-        {
+        for dir in packages_dirs() {
             let Ok(entries) = std::fs::read_dir(&dir) else {
                 continue;
             };
@@ -1124,25 +1120,41 @@ impl AppApi {
         let on_shelf = self.on_shelf_check()?;
         let mut items = Vec::new();
 
-        // vena-catalog: the bundled flagship packages.
-        for p in bundled_packages() {
-            if p.exists() {
-                let title = "Dracula";
-                if query.is_empty() || title.to_lowercase().contains(&query.to_lowercase()) {
-                    items.push(StoreItem {
-                        source: "vena-catalog".into(),
-                        id: "dracula".into(),
-                        title: title.into(),
-                        author: Some("Bram Stoker".into()),
-                        license: Some("public-domain".into()),
-                        download_url: Some(p.to_string_lossy().into()),
-                        cover: None,
-                        on_shelf: on_shelf("Dracula"),
-                    });
+        // vena-catalog: EVERY bundled pre-forged package features, described by
+        // its own metadata (pkg::peek_vena) — drop a new .vena into a packages
+        // dir and it appears here, nothing hardcoded.
+        let mut seen = std::collections::HashSet::new();
+        for dir in packages_dirs() {
+            let Ok(entries) = std::fs::read_dir(&dir) else {
+                continue;
+            };
+            for e in entries.flatten() {
+                let p = e.path();
+                if p.extension().and_then(|x| x.to_str()) != Some("vena") {
+                    continue;
                 }
-                break;
+                let Ok((slug, title, author, license)) = vena_core::pkg::peek_vena(&p) else {
+                    continue;
+                };
+                if !seen.insert(slug.clone()) {
+                    continue;
+                }
+                if !query.is_empty() && !title.to_lowercase().contains(&query.to_lowercase()) {
+                    continue;
+                }
+                items.push(StoreItem {
+                    source: "vena-catalog".into(),
+                    on_shelf: on_shelf(&title) || on_shelf(&slug),
+                    id: slug,
+                    title,
+                    author,
+                    license: Some(license),
+                    download_url: Some(p.to_string_lossy().into()),
+                    cover: None,
+                });
             }
         }
+        items.sort_by(|a, b| a.title.cmp(&b.title));
 
         // Project Gutenberg (real Gutendex; may be offline-blocked — that's honest).
         if !query.is_empty() {
@@ -1566,6 +1578,14 @@ fn insert_ledger_rows(
         }
     }
     Ok(())
+}
+
+/// Every directory that can hold bundled packages (deduped).
+fn packages_dirs() -> std::collections::BTreeSet<PathBuf> {
+    bundled_packages()
+        .iter()
+        .filter_map(|p| p.parent().map(std::path::Path::to_path_buf))
+        .collect()
 }
 
 fn bundled_packages() -> Vec<PathBuf> {
