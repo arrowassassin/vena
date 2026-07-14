@@ -52,15 +52,93 @@ impl Engine {
         message: &str,
         on_stage: &mut dyn FnMut(&str),
     ) -> Result<TurnReport> {
+        self.companion_turn_with_history(
+            store,
+            story_id,
+            character_id,
+            message,
+            None,
+            &[],
+            on_stage,
+        )
+    }
+
+    /// Condense a stretch of conversation into a short durable memory note —
+    /// the compaction half of chatbot memory. Derives ONLY from already-gated
+    /// dialogue, so the note inherits the gate.
+    pub fn condense(&self, turns: &[(String, String)]) -> Result<String> {
+        let mut convo = String::new();
+        for (role, text) in turns {
+            convo.push_str(if role == "user" {
+                "READER"
+            } else {
+                "COMPANION"
+            });
+            convo.push_str(": ");
+            let line: String = text.chars().take(400).collect();
+            convo.push_str(&line);
+            convo.push('\n');
+        }
+        self.backend.complete(
+            "You keep the private notebook of an in-story companion. Condense this conversation \
+             into at most five short sentences of durable memory: what the reader asked about, \
+             cared about, was told, or promised. Plain prose. Add NOTHING that is not in the text.",
+            &convo,
+            &GenOptions {
+                max_tokens: 220,
+                temperature: 0.2,
+                json: false,
+            },
+        )
+    }
+
+    /// Companion turn with conversation memory, chatbot-shaped: `memory` is
+    /// the rolling condensed note over older exchanges (see `condense`), and
+    /// `history` is the recent verbatim window — (role, text) pairs, oldest
+    /// first. Both were spoiler-gated when written AND replay only at-or-below
+    /// the reader's current bookmark (Store::recent_messages /
+    /// latest_chat_memory), so continuity never opens a side door past the
+    /// gate. VERIFY still runs on every new reply.
+    pub fn companion_turn_with_history(
+        &self,
+        store: &Store,
+        story_id: i64,
+        character_id: Option<i64>,
+        message: &str,
+        memory: Option<&str>,
+        history: &[(String, String)],
+        on_stage: &mut dyn FnMut(&str),
+    ) -> Result<TurnReport> {
         // ---- STAGES 1 + 1.5 + 2 (shared with gate_and_assemble) ----
         on_stage("gate");
         let GatedTurn {
-            system,
+            mut system,
             visible,
             forbidden,
             unmet,
             character,
         } = gate_and_assemble(store, story_id, character_id, message)?;
+        if let Some(m) = memory {
+            system.push_str(
+                "\n\n== WHAT YOU REMEMBER OF YOUR EARLIER TALKS WITH THE READER (your own private notes) ==\n",
+            );
+            system.push_str(m);
+            system.push('\n');
+        }
+        if !history.is_empty() {
+            system.push_str(
+                "\n\n== EARLIER IN THIS CONVERSATION (already gated when spoken — stay consistent with it, do not repeat it verbatim) ==\n",
+            );
+            for (role, text) in history {
+                let who = if role == "user" { "READER" } else { "YOU" };
+                // cap each replayed line so a long chat can't crowd out the ledger
+                let line: String = text.chars().take(400).collect();
+                system.push_str(who);
+                system.push_str(": ");
+                system.push_str(&line);
+                system.push('\n');
+            }
+        }
 
         // ---- Guard Character Fates: short-circuit before generation ----
         if self.guard_fates && is_fate_question(message) {

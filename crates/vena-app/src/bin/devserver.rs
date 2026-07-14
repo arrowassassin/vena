@@ -200,6 +200,7 @@ fn dispatch(
             a["enabled"].as_bool().unwrap_or(false),
             a["minutesPerEpisode"].as_i64().unwrap_or(20),
         )?),
+        "get_conversation" => api.get_conversation(i("bookId"), a["characterId"].as_i64()),
         "companion_turn" => {
             let ev = events.clone();
             let turn_id = i("turnId");

@@ -105,6 +105,15 @@ fn set_serial_mode(
 // ============================ Companion ============================
 
 #[tauri::command]
+fn get_conversation(
+    api: State<'_, Api>,
+    book_id: i64,
+    character_id: Option<i64>,
+) -> Result<serde_json::Value, VenaError> {
+    api.get_conversation(book_id, character_id)
+}
+
+#[tauri::command]
 async fn companion_turn(
     app: tauri::AppHandle,
     api: State<'_, Api>,
@@ -632,6 +641,7 @@ fn main() {
             set_progress,
             set_serial_mode,
             companion_turn,
+            get_conversation,
             list_characters,
             who_is,
             get_recap,

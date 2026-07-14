@@ -335,11 +335,72 @@ impl AppApi {
         let progress = store.get_progress(book_id)?.0;
         // Persist the turn (audit trail; pinned_progress).
         let convo = self.ensure_conversation(&store, book_id, character_id)?;
+        // Conversation memory, chatbot-shaped: a rolling condensed note over
+        // the older exchanges + the recent verbatim window, both spoiler-gated
+        // by pinned progress and loaded BEFORE this message lands.
+        let memory = store.latest_chat_memory(convo, progress)?;
+        let history: Vec<(String, String)> = store
+            .recent_messages(convo, 8, progress)?
+            .into_iter()
+            .map(|(role, text, _)| (role, text))
+            .collect();
+        // Compaction: every ~6 exchanges, re-condense everything older than
+        // the window into a fresh note. Best-effort — a failed condense (no
+        // engine, offline) costs nothing but staler memory.
+        let n = store.count_messages(convo, progress)?;
+        if n >= 20 && n % 12 == 0 {
+            let older: Vec<(String, String)> = store
+                .recent_messages(convo, 48, progress)?
+                .into_iter()
+                .rev()
+                .skip(8)
+                .rev()
+                .map(|(role, text, _)| (role, text))
+                .collect();
+            if !older.is_empty() {
+                if let Ok(note) = engine.condense(&older) {
+                    let _ = store.add_chat_memory(convo, note.trim(), progress);
+                }
+            }
+        }
         store.add_message(convo, "user", message, progress, "{}")?;
-        let report = engine.companion_turn(&store, book_id, character_id, message, on_stage)?;
+        let report = engine.companion_turn_with_history(
+            &store,
+            book_id,
+            character_id,
+            message,
+            memory.as_deref(),
+            &history,
+            on_stage,
+        )?;
         let verify_json = serde_json::to_string(&report.claims).unwrap_or_else(|_| "[]".into());
         store.add_message(convo, "assistant", &report.reply, progress, &verify_json)?;
         Ok(report)
+    }
+
+    /// The stored chat thread for a (book, character), oldest-first and
+    /// spoiler-gated: only turns pinned at or before the CURRENT bookmark
+    /// replay (a re-seal rewind hides later chat), and a re-sealed (archived)
+    /// conversation never returns at all — fresh eyes stay fresh.
+    pub fn get_conversation(
+        &self,
+        book_id: i64,
+        character_id: Option<i64>,
+    ) -> Result<serde_json::Value> {
+        let store = self.store();
+        let progress = store.get_progress(book_id)?.0;
+        let turns = match store.find_active_conversation(book_id, character_id)? {
+            Some(convo) => store.recent_messages(convo, 200, progress)?,
+            None => Vec::new(),
+        };
+        let last_ch = turns.iter().map(|t| t.2).max().unwrap_or(0);
+        Ok(serde_json::json!({
+            "turns": turns.iter().map(|(role, text, ch)| serde_json::json!({
+                "role": role, "text": text, "chapter": ch,
+            })).collect::<Vec<_>>(),
+            "count": turns.len(),
+            "last_chapter": last_ch,
+        }))
     }
 
     pub fn list_characters(&self, book_id: i64) -> Result<Vec<Character>> {

@@ -546,3 +546,77 @@ fn probes_are_blocked_by_the_gate() {
     assert!(!results.is_empty());
     assert!(results.iter().all(|r| !r.leaked), "no probe should leak");
 }
+
+#[test]
+fn recent_messages_are_progress_gated_and_ordered() {
+    let (s, sid, _) = fixture();
+    let convo = s.create_conversation(sid, None).unwrap();
+    s.add_message(convo, "user", "first at ch2", 2, "{}")
+        .unwrap();
+    s.add_message(convo, "assistant", "reply at ch2", 2, "{}")
+        .unwrap();
+    s.add_message(convo, "user", "later at ch9", 9, "{}")
+        .unwrap();
+    // gate at ch5: the ch9 turn must NOT replay (re-seal safety)
+    let gated = s.recent_messages(convo, 10, 5).unwrap();
+    assert_eq!(gated.len(), 2);
+    assert_eq!(gated[0].1, "first at ch2");
+    assert_eq!(gated[1].0, "assistant");
+    // at ch9 everything replays, oldest-first, and limit keeps the TAIL
+    let all = s.recent_messages(convo, 10, 9).unwrap();
+    assert_eq!(all.len(), 3);
+    let tail = s.recent_messages(convo, 2, 9).unwrap();
+    assert_eq!(tail.len(), 2);
+    assert_eq!(tail[0].1, "reply at ch2");
+    assert_eq!(tail[1].1, "later at ch9");
+}
+
+#[test]
+fn history_reaches_the_prompt_and_verify_still_guards_it() {
+    let (s, sid, _) = fixture();
+    s.set_progress(sid, 6, 0).unwrap();
+    // The scripted reply is clean; what we assert is that a turn WITH history
+    // completes the normal stage flow and stays gated.
+    let backend = ScriptedInference::new(vec![
+        "As I said before, her illness troubles me deeply.".into()
+    ]);
+    let eng = Engine::new(Box::new(backend)).with_mode(GateMode::Standard);
+    let history = vec![
+        ("user".to_string(), "What troubles you?".to_string()),
+        (
+            "assistant".to_string(),
+            "Her illness troubles me.".to_string(),
+        ),
+    ];
+    let report = eng
+        .companion_turn_with_history(
+            &s,
+            sid,
+            None,
+            "And now?",
+            Some("The reader keeps asking after Lucy's health."),
+            &history,
+            &mut |_| {},
+        )
+        .unwrap();
+    assert!(!report.repaired && !report.redacted);
+    assert!(!report.reply.is_empty());
+}
+
+#[test]
+fn chat_memory_notes_are_progress_gated() {
+    let (s, sid, _) = fixture();
+    let convo = s.create_conversation(sid, None).unwrap();
+    s.add_chat_memory(convo, "early note", 3).unwrap();
+    s.add_chat_memory(convo, "late note", 9).unwrap();
+    // a re-sealed reader at ch5 gets only the early note
+    assert_eq!(
+        s.latest_chat_memory(convo, 5).unwrap().as_deref(),
+        Some("early note")
+    );
+    assert_eq!(
+        s.latest_chat_memory(convo, 9).unwrap().as_deref(),
+        Some("late note")
+    );
+    assert_eq!(s.latest_chat_memory(convo, 1).unwrap(), None);
+}

@@ -98,6 +98,13 @@
     this._venaComicsShelfDom();
     this._venaModelDelDom();
     this._venaReaderA11y();
+    // chat threads belong to a book: any book switch drops old hydration
+    if (this._chatBook !== this.state.book) {
+      this._chatBook = this.state.book;
+      this._histLoaded = {};
+      if (Object.keys(this.state.chats || {}).length) this.setState({ chats: {} });
+    }
+    if (this.state.chatOpen) this._loadChatHistory(this.state.char);
     // remember where the reader is so the next launch opens right there —
     // but never before the boot restore has read the previous values
     if (this._navRestored) {
@@ -354,8 +361,9 @@
   };
 
   P._selectBook = function (def) {
+    this._histLoaded = {}; // chat threads belong to a book — never carry over
     this.setState({
-      book: def.id, wikiArmed: false, resolved: false,
+      book: def.id, wikiArmed: false, resolved: false, chats: {},
       chOverride: Math.max(1, (def.meta && def.meta.progress_episode) || 1)
     });
     if (def.meta) this._loadBook(def.meta);
@@ -1458,8 +1466,40 @@
     }
     this.__venaForgetArmed = null;
     V.call('forget_conversations', { bookId: meta.id }).then(() => {
+      this._histLoaded = {}; // hydrated history is gone with the store rows
+      this.setState({ chats: {} });
       this._toast('CONVERSATIONS FORGOTTEN — THE BOOK, LEDGER & THEORIES REMAIN');
     }).catch(e => this._honest('FORGET FAILED', e));
+  };
+
+  /* ---------------- per-character chat memory ----------------
+   * Opening a chat hydrates the REAL stored thread (get_conversation):
+   * spoiler-gated turns + a PREVIOUSLY divider, so the reader sees what was
+   * said before and the character (whose engine turn now carries the same
+   * gated history) remembers it too. */
+  P._loadChatHistory = function (charId) {
+    const meta = this._curBookMeta();
+    const key = String(charId);
+    this._histLoaded = this._histLoaded || {};
+    if (!meta || (this.state.chats[charId] || []).length || this._histLoaded[key]) return;
+    this._histLoaded[key] = true;
+    const cid = typeof charId === 'number' ? charId : null;
+    V.call('get_conversation', { bookId: meta.id, characterId: cid }).then(h => {
+      if (!h || !h.count || (this.state.chats[charId] || []).length) return;
+      const items = [{
+        bot: true,
+        text: '◆ PREVIOUSLY — ' + h.count + ' EXCHANGE' + (h.count === 1 ? '' : 'S')
+          + ', UP TO CH. ' + this.roman(Math.max(1, h.last_chapter | 0))
+          + '. THE THREAD PICKS UP WHERE YOU LEFT IT.'
+      }].concat((h.turns || []).map(t => t.role === 'user'
+        ? { user: true, text: t.text }
+        : { bot: true, text: t.text }));
+      this.setState(s => {
+        const chats = Object.assign({}, s.chats);
+        chats[charId] = items.concat(chats[charId] || []);
+        return { chats };
+      });
+    }).catch(() => { this._histLoaded[key] = false; });
   };
 
   P._venaDataPrivacy = function () {
@@ -1636,7 +1676,8 @@
     }));
     const chips = [
       'Remind me — where do things stand right now?',
-      'What do you fear most, as of this chapter?'
+      'What do you fear most, as of this chapter?',
+      'What did we talk about last time?'
     ].map(q => ({ label: q, send: () => this._send(q) }));
 
     const byName = frag => (this.fullCast || []).find(c => String(c.name).toLowerCase().includes(frag));

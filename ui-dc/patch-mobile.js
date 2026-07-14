@@ -322,6 +322,33 @@
   };
 
   // ------------------------------------------------------------------- chat
+  // per-character chat memory: hydrate the REAL stored thread on chat open
+  // (spoiler-gated turns + a PREVIOUSLY divider) — parity with desktop
+  P._loadChatHistory = function (charId) {
+    var self = this;
+    var bookId = this._bookId ? this._bookId() : null;
+    var key = String(charId);
+    this._histLoaded = this._histLoaded || {};
+    if (bookId == null || (this.state.chats[charId] || []).length || this._histLoaded[key]) return;
+    this._histLoaded[key] = true;
+    var cid = /^\d+$/.test(String(charId)) ? Number(charId) : null;
+    V.call("get_conversation", { bookId: bookId, characterId: cid }).then(function (h) {
+      if (!h || !h.count || (self.state.chats[charId] || []).length) return;
+      var items = [{
+        bot: true,
+        text: "◆ PREVIOUSLY — " + h.count + " EXCHANGE" + (h.count === 1 ? "" : "S")
+          + ", UP TO CH. " + Math.max(1, h.last_chapter | 0)
+          + ". THE THREAD PICKS UP WHERE YOU LEFT IT."
+      }];
+      (h.turns || []).forEach(function (t) {
+        items.push(t.role === "user" ? { user: true, text: t.text } : { bot: true, text: t.text });
+      });
+      var chats = Object.assign({}, self.state.chats);
+      chats[charId] = items.concat(chats[charId] || []);
+      self.setState({ chats: chats });
+    }).catch(function () { self._histLoaded[key] = false; });
+  };
+
   P._send = function (forcedText) {
     var self = this, st = this.state;
     if (this._busy) return;
@@ -815,6 +842,14 @@
     this._applyMangaPages();
     this._applyModelDel();
     this._applyReaderA11y();
+    // chat threads belong to a book: switching books (any path, including the
+    // design's own cover taps) drops the hydrated threads of the old one
+    if (this._chatBook !== this.state.book) {
+      this._chatBook = this.state.book;
+      this._histLoaded = {};
+      if (Object.keys(this.state.chats || {}).length) this.setState({ chats: {} });
+    }
+    if (this.state.chatOpen) this._loadChatHistory(this.state.char);
     // remember the open book so the next launch resumes it (never before the
     // boot restore in _hydrate has read the previous value)
     if (this._navRestored) {
@@ -1112,6 +1147,8 @@
     }
     this.__venaForgetArmed = null;
     V.call("forget_conversations", { bookId: bid }).then(function () {
+      self._histLoaded = {}; // hydrated history went with the store rows
+      self.setState({ chats: {} });
       self._toast("CONVERSATIONS FORGOTTEN — THE BOOK, LEDGER & THEORIES REMAIN");
     }).catch(function (e) { self._up(e); });
   };
@@ -1231,6 +1268,13 @@
       if (/BROWSE FILES/i.test(t)) self._importPrompt();
       else if (/READ THE BRANCH/i.test(t)) self._toast("WHAT-IF BRANCHES AREN’T WIRED TO THE ENGINE YET");
     };
+
+    // --- chat starter chips: book-agnostic (the design's are Dracula demo
+    // lines) + a memory recap now that turns carry conversation history
+    v.chips = [
+      { label: "REMIND ME — WHERE DO THINGS STAND?", send: function () { self._send("Remind me — where do things stand right now?"); } },
+      { label: "WHAT DID WE TALK ABOUT LAST TIME?", send: function () { self._send("What did we talk about last time?"); } }
+    ];
 
     // --- comics: real CBZ pages when a comic is on the shelf, demo otherwise
     v.mangaOpenFn = function () { self.setState({ mangaOpen: true }); self._loadManga(); };

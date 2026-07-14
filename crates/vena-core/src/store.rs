@@ -636,6 +636,68 @@ impl Store {
         Ok(self.conn.last_insert_rowid())
     }
 
+    /// The tail of a conversation, oldest-first, SPOILER-GATED: only turns
+    /// pinned at or before `max_progress` replay. After a re-seal rewind, chat
+    /// that happened ahead of the new bookmark stays sealed with everything
+    /// else. Returns (role, text, pinned_progress).
+    pub fn recent_messages(
+        &self,
+        conversation_id: i64,
+        limit: usize,
+        max_progress: i64,
+    ) -> Result<Vec<(String, String, i64)>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT role, text, pinned_progress FROM
+               (SELECT id, role, text, pinned_progress FROM message
+                 WHERE conversation_id=?1 AND pinned_progress<=?2
+                 ORDER BY id DESC LIMIT ?3)
+             ORDER BY id ASC",
+        )?;
+        let rows = stmt
+            .query_map(params![conversation_id, max_progress, limit as i64], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
+    /// Total gated messages in a conversation (drives compaction cadence).
+    pub fn count_messages(&self, conversation_id: i64, max_progress: i64) -> Result<i64> {
+        Ok(self.conn.query_row(
+            "SELECT COUNT(*) FROM message WHERE conversation_id=?1 AND pinned_progress<=?2",
+            params![conversation_id, max_progress],
+            |r| r.get(0),
+        )?)
+    }
+
+    /// Append a condensed relationship-memory note (§6b). Progress-stamped so
+    /// it obeys the same gate as everything else.
+    pub fn add_chat_memory(&self, conversation_id: i64, text: &str, progress: i64) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO chat_memory (conversation_id,text,created_at_progress) VALUES (?1,?2,?3)",
+            params![conversation_id, text, progress],
+        )?;
+        Ok(())
+    }
+
+    /// The newest memory note visible at the reader's bookmark, if any.
+    pub fn latest_chat_memory(
+        &self,
+        conversation_id: i64,
+        max_progress: i64,
+    ) -> Result<Option<String>> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT text FROM chat_memory
+                 WHERE conversation_id=?1 AND created_at_progress<=?2
+                 ORDER BY id DESC LIMIT 1",
+                params![conversation_id, max_progress],
+                |r| r.get(0),
+            )
+            .optional()?)
+    }
+
     /// Whether a conversation is currently archived (re-sealed). Used by the re-seal
     /// filter and its regression test.
     pub fn is_conversation_archived(&self, conversation_id: i64) -> Result<bool> {
