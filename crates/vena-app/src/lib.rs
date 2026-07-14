@@ -6,6 +6,8 @@
 pub mod api;
 pub mod images;
 pub mod keystore;
+#[cfg(feature = "embedded-llm")]
+pub mod local_llm;
 pub mod net;
 
 pub use api::AppApi;

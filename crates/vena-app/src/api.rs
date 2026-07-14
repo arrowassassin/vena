@@ -111,6 +111,13 @@ impl AppApi {
         self.store()
     }
 
+    /// Test-support: direct store access for integration tests (importing
+    /// fixtures, inspecting the ledger). Not part of the command surface.
+    #[doc(hidden)]
+    pub fn store_for_tests(&self) -> std::sync::MutexGuard<'_, Store> {
+        self.store()
+    }
+
     pub(crate) fn assets_dir(&self) -> Result<PathBuf> {
         let dir = self.data_dir.join("assets");
         std::fs::create_dir_all(&dir)?;
@@ -732,11 +739,16 @@ impl AppApi {
         let mode = self.setting_or(&store, K_CHAT_MODE, "cloud");
         let (model, ready) = match mode.as_str() {
             "local" => {
-                // ready = weights configured AND a server actually answering —
-                // an installed model with no runtime must not claim to speak
+                // ready = the embedded runtime has the weights on disk, OR an
+                // external server actually answers. Never a bare settings flag.
                 let flagged = self.setting_bool_locked(&store, K_LOCAL_READY, false);
-                let base = self.setting_or(&store, K_LOCAL_BASE, "http://localhost:11434");
-                let ready = flagged && crate::net::probe_openai_base(&base);
+                let embedded =
+                    cfg!(feature = "embedded-llm") && self.local_weights(&store).is_some();
+                let ready = flagged
+                    && (embedded || {
+                        let base = self.setting_or(&store, K_LOCAL_BASE, "http://localhost:11434");
+                        crate::net::probe_openai_base(&base)
+                    });
                 (self.setting_or(&store, K_LOCAL_MODEL, "QUILL·7B"), ready)
             }
             _ => {
@@ -869,17 +881,20 @@ impl AppApi {
     }
 
     pub fn set_chat_mode(&self, mode: &str) -> Result<()> {
-        // Switching to local only sticks when a local server actually answers —
-        // otherwise every turn after the switch would fail with a dead socket.
+        // Switching to local only sticks when it can actually answer: embedded
+        // weights on disk, or an external server that responds.
         if mode == "local" {
-            let base = {
+            let (embedded, base) = {
                 let store = self.store();
-                self.setting_or(&store, K_LOCAL_BASE, "http://localhost:11434")
+                (
+                    cfg!(feature = "embedded-llm") && self.local_weights(&store).is_some(),
+                    self.setting_or(&store, K_LOCAL_BASE, "http://localhost:11434"),
+                )
             };
-            if !crate::net::probe_openai_base(&base) {
+            if !embedded && !crate::net::probe_openai_base(&base) {
                 return Err(VenaError::Other(format!(
-                    "no local engine at {base} — start Ollama, LM Studio or llama-server \
-                     (any OpenAI-compatible server) first, then activate"
+                    "no local engine — download a tier in Settings (it runs in-app), or \
+                     start an OpenAI-compatible server at {base}, then activate"
                 )));
             }
         }
@@ -1056,6 +1071,8 @@ impl AppApi {
             .find(|m| m.id == tier || m.chip == tier || m.brand == tier)
             .ok_or_else(|| VenaError::Other(format!("unknown tier {tier}")))?;
         let path = self.tier_gguf_path(t);
+        #[cfg(feature = "embedded-llm")]
+        crate::local_llm::evict(&path); // freed disk = freed memory too
         let existed = path.exists();
         if existed {
             std::fs::remove_file(&path)?;
@@ -1394,14 +1411,22 @@ impl AppApi {
                 if !self.setting_bool_locked(store, K_LOCAL_READY, false) {
                     return Err(VenaError::NoBackend);
                 }
+                // Embedded runtime first: a downloaded tier speaks IN-PROCESS
+                // (llama.cpp compiled in) — no external server to run.
+                #[cfg(feature = "embedded-llm")]
+                if let Some((path, brand)) = self.local_weights(store) {
+                    return Ok(Box::new(crate::local_llm::EmbeddedLlm::new(path, &brand)));
+                }
+                // No weights on disk: an external OpenAI-compatible server
+                // (Ollama / LM Studio / llama-server) can still power local mode.
                 let base = self.setting_or(store, K_LOCAL_BASE, "http://localhost:11434");
                 // Pre-flight instead of a raw connection error mid-turn. NO silent
                 // cloud fallback: the reader chose local — content stays on-device.
                 if !crate::net::probe_openai_base(&base) {
                     return Err(VenaError::Other(format!(
-                        "local engine offline — nothing is answering at {base}. Start your \
-                         local model server (Ollama, LM Studio, or llama-server with the \
-                         downloaded GGUF), or switch chat to Cloud Relay in Settings"
+                        "local engine offline — no downloaded weights and nothing answering \
+                         at {base}. Download a tier in Settings (it runs in-app), start your \
+                         own local server, or switch chat to Cloud Relay"
                     )));
                 }
                 let model = self.setting_or(store, K_LOCAL_MODEL, "qwen3");
@@ -1409,6 +1434,15 @@ impl AppApi {
             }
             _ => self.cloud_backend_with(store),
         }
+    }
+
+    /// The configured local tier's weights, when they are actually on disk
+    /// (plausibly complete). Drives the embedded runtime + honest status.
+    fn local_weights(&self, store: &Store) -> Option<(PathBuf, String)> {
+        let brand = self.setting_or(store, K_LOCAL_MODEL, "");
+        let t = MODEL_TIERS.iter().find(|t| t.brand == brand)?;
+        let path = self.tier_gguf_path(t);
+        weights_plausible(&path, t.size_gb).then(|| (path, brand))
     }
 
     /// Cloud Relay backend. Takes the ALREADY-HELD store guard — never re-locks

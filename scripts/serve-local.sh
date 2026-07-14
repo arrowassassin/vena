@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Serve a downloaded voice tier locally so THE CAST can speak — 100% on-device.
 #
-# Vena downloads GGUF weights, but a model needs a runtime to answer. This
+# NOTE: since the embedded runtime landed, Vena speaks in-process — this script
+# is only for power users who prefer an external server. It
 # starts llama.cpp's llama-server (OpenAI-compatible) on the port Vena's local
 # mode expects (11434), loading the newest .gguf from your profile's models
 # dir — or a path you pass:

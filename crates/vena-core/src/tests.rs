@@ -620,3 +620,69 @@ fn chat_memory_notes_are_progress_gated() {
     );
     assert_eq!(s.latest_chat_memory(convo, 1).unwrap(), None);
 }
+
+/// A scripted backend that CLAIMS to be remote and records every system prompt
+/// — proves the Cloud Relay repair branch never discloses forbidden text.
+struct RemoteProbe {
+    inner: ScriptedInference,
+    prompts: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+}
+impl crate::inference::Inference for RemoteProbe {
+    fn name(&self) -> String {
+        "remote-probe".into()
+    }
+    fn is_remote(&self) -> bool {
+        true
+    }
+    fn complete(
+        &self,
+        system: &str,
+        user: &str,
+        opts: &crate::inference::GenOptions,
+    ) -> crate::error::Result<String> {
+        self.prompts.lock().unwrap().push(system.to_string());
+        self.inner.complete(system, user, opts)
+    }
+}
+
+#[test]
+fn remote_repair_discloses_nothing() {
+    let (s, sid, _) = fixture();
+    s.set_progress(sid, 6, 0).unwrap();
+    let prompts = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let backend = RemoteProbe {
+        inner: ScriptedInference::new(vec![
+            "I fear Lucy dies before this is over.".into(), // leaky draft
+            "It troubles me; I cannot say how it ends.".into(), // clean regen
+        ]),
+        prompts: prompts.clone(),
+    };
+    let eng = Engine::new(Box::new(backend)).with_mode(GateMode::Standard);
+    let report = eng
+        .companion_turn(&s, sid, None, "What of Lucy's illness?", &mut |_| {})
+        .unwrap();
+    assert!(report.repaired);
+    let forbidden: Vec<String> = s
+        .forbidden_facts(sid, 6, None)
+        .unwrap()
+        .into_iter()
+        .map(|f| f.text)
+        .collect();
+    let prompts = prompts.lock().unwrap();
+    assert!(prompts.len() >= 2, "compose + repair prompts captured");
+    for (i, p) in prompts.iter().enumerate() {
+        for f in &forbidden {
+            assert!(
+                !p.contains(f.as_str()),
+                "remote prompt #{i} disclosed forbidden text: {f}"
+            );
+        }
+    }
+    // and the repair instruction is the neutral remote one
+    assert!(
+        prompts
+            .iter()
+            .any(|p| p.contains("drifted into events beyond")),
+        "remote repair must use the no-disclosure instruction"
+    );
+}
