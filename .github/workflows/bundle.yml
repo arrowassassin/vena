@@ -108,12 +108,22 @@ jobs:
 
       - name: Build the canonical UI
         run: node ui-dc/build.mjs
+
+      # Use the CARGO Tauri CLI (not npx) throughout the Android build. Tauri's
+      # mobile Gradle project calls the CLI back to rebuild the Rust lib per-ABI
+      # (task :app:rustBuildArm64Release); when init'd via npx it records `npm`
+      # as that runner and Gradle then fails with `npm error enoent` (there is no
+      # package.json). `cargo tauri` records itself, so the callback is self
+      # contained — no Node runner needed.
+      - name: Install Tauri CLI (cargo)
+        run: cargo install tauri-cli --version "^2.0" --locked
+
       - name: Generate icon set
-        run: npx --yes @tauri-apps/cli@^2 icon crates/vena-app/icons/icon.png -o crates/vena-app/icons
+        run: cargo tauri icon crates/vena-app/icons/icon.png -o crates/vena-app/icons
 
       - name: Init Android project
         working-directory: crates/vena-app
-        run: npx --yes @tauri-apps/cli@^2 android init --ci
+        run: cargo tauri android init --ci
 
       # Mobile ships RELAY-ONLY: no embedded llama.cpp / stable-diffusion.cpp.
       # Compiling multi-GB GPU runtimes into an APK is impractical (a phone runs
@@ -126,7 +136,7 @@ jobs:
           NDK_HOME: ${{ env.NDK_HOME }}
         # `--features tauri` is a native flag (tauri also injects custom-protocol);
         # `--no-default-features` isn't, so it's passed through to cargo after `--`.
-        run: npx --yes @tauri-apps/cli@^2 android build --apk --target aarch64 --features tauri -- --no-default-features
+        run: cargo tauri android build --apk --target aarch64 --features tauri -- --no-default-features
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
