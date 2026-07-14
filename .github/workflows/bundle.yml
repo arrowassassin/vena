@@ -55,6 +55,10 @@ jobs:
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # stable-diffusion.cpp / llama.cpp use std::filesystem, which the macOS
+          # SDK marks unavailable below 10.15. CMake + cc honor this env var, so the
+          # embedded C++ builds target a modern-enough libc++. No effect off macOS.
+          MACOSX_DEPLOYMENT_TARGET: "11.0"
         with:
           projectPath: crates/vena-app
           args: --features tauri --target ${{ matrix.target }}
@@ -109,11 +113,16 @@ jobs:
         working-directory: crates/vena-app
         run: npx --yes @tauri-apps/cli@^2 android init --ci
 
+      # Mobile ships RELAY-ONLY: no embedded llama.cpp / stable-diffusion.cpp.
+      # Compiling multi-GB GPU runtimes into an APK is impractical (a phone runs
+      # neither a 7B LLM nor SDXL usefully) and needs a fragile NDK C++ cross-
+      # compile. `--no-default-features` drops embedded-llm/embedded-paint; the
+      # app uses Cloud Relay / the download path on mobile. Desktop keeps embedded.
       - name: Build APK
         working-directory: crates/vena-app
         env:
           NDK_HOME: ${{ env.NDK_HOME }}
-        run: npx --yes @tauri-apps/cli@^2 android build --apk --target aarch64
+        run: npx --yes @tauri-apps/cli@^2 android build --apk --target aarch64 --no-default-features --features tauri
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
