@@ -1,0 +1,55 @@
+name: codeql
+
+# Static security analysis on Rust and the UI JavaScript. Runs on PRs, pushes
+# to main, and weekly so new advisories surface against unchanged code.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    - cron: "0 6 * * 1" # Mondays 06:00 UTC
+  workflow_dispatch:
+
+jobs:
+  analyze:
+    runs-on: ubuntu-latest
+    permissions:
+      security-events: write
+      actions: read
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - language: rust
+            build-mode: manual
+          - language: javascript-typescript
+            build-mode: none
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: System deps (rust build)
+        if: matrix.language == 'rust'
+        run: sudo apt-get update && sudo apt-get install -y cmake libclang-dev
+
+      - uses: dtolnay/rust-toolchain@stable
+        if: matrix.language == 'rust'
+      - uses: swatinem/rust-cache@v2
+        if: matrix.language == 'rust'
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v3
+        with:
+          languages: ${{ matrix.language }}
+          build-mode: ${{ matrix.build-mode }}
+
+      - name: Build (rust manual mode)
+        if: matrix.language == 'rust'
+        run: cargo build --workspace
+
+      - name: Analyze
+        uses: github/codeql-action/analyze@v3
+        with:
+          category: "/language:${{ matrix.language }}"

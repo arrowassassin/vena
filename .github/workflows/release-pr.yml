@@ -1,0 +1,45 @@
+name: release-pr
+
+# Open a release PR into main. Run it from the Actions tab with a version like
+# 0.2.0: it bumps the workspace version on a release branch and opens a PR to
+# main whose merge you gate on the `test` and `codeql` workflows. Merging then
+# tagging vX.Y.Z is what fires `bundle` to ship installers — this workflow only
+# prepares the PR, it never publishes.
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "New version (e.g. 0.2.0)"
+        required: true
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  open-pr:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Bump versions in lockstep
+        run: python3 scripts/bump-version.py "${{ github.event.inputs.version }}"
+
+      - name: Open the release PR
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ github.event.inputs.version }}
+        run: |
+          branch="release/v$VERSION"
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git checkout -b "$branch"
+          git commit -am "release: v$VERSION"
+          git push -u origin "$branch" --force
+          gh pr create --base main --head "$branch" \
+            --title "release: v$VERSION" \
+            --body "Automated release PR. Merge once **test** and **codeql** are green, then push tag \`v$VERSION\` to build and attach installers (macOS/Windows/Linux/Android) via the **bundle** workflow." \
+            || gh pr edit "$branch" --title "release: v$VERSION"
