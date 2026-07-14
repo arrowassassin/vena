@@ -1,7 +1,7 @@
-//! Guard: the Tauri command handlers (bin/vena.rs) and the HTTP devserver dispatch
-//! (bin/devserver.rs) are two hand-maintained mirrors of the same §11.2 surface.
-//! If one gains a command the other lacks, the UI works on one transport and 404s
-//! on the other. This test parses both binaries' command sets and asserts they match.
+//! Guard: the Tauri command handlers (src/tauri_shell.rs) and the HTTP devserver
+//! dispatch (bin/devserver.rs) are two hand-maintained mirrors of the same §11.2
+//! surface. If one gains a command the other lacks, the UI works on one transport
+//! and 404s on the other. This test parses both command sets and asserts they match.
 
 use std::collections::BTreeSet;
 
@@ -11,7 +11,7 @@ fn read(p: &str) -> String {
 
 /// Tauri commands = the identifiers listed in `tauri::generate_handler![ ... ]`.
 fn tauri_commands() -> BTreeSet<String> {
-    let src = read("src/bin/vena.rs");
+    let src = read("src/tauri_shell.rs");
     let start = src.find("generate_handler![").expect("handler macro");
     let rest = &src[start + "generate_handler![".len()..];
     let end = rest.find(']').expect("handler close");
