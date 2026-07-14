@@ -2346,6 +2346,17 @@ class Component extends DCLogic {
     // no prefilled margin note from a chapter the reader never opened
     this.setState({ tglSerial: false, notes: [] });
     this._offVena = V.onEvent(function (ev) { self._onVenaEvent(ev); });
+    // device reading prefs + reduced-motion, same as desktop
+    try {
+      this._readerScale = parseFloat(localStorage.getItem("vena_reader_scale")) || 1;
+      this._readerLine = localStorage.getItem("vena_reader_line") || "";
+    } catch (_) { this._readerScale = 1; this._readerLine = ""; }
+    if (!document.getElementById("vena-a11y-css")) {
+      var sty = document.createElement("style");
+      sty.id = "vena-a11y-css";
+      sty.textContent = "@media (prefers-reduced-motion: reduce){*,*::before,*::after{animation-duration:.001s !important;animation-iteration-count:1 !important;transition-duration:.001s !important;scroll-behavior:auto !important}}";
+      document.head.appendChild(sty);
+    }
     this._hydrate();
   };
 
@@ -2412,7 +2423,13 @@ class Component extends DCLogic {
             String(b.package_sha || "??").slice(-2).toUpperCase(),
         };
       });
-      var cur = self.bookDefs.find(function (b) { return b.id === self.state.book; }) || self.bookDefs[0] || null;
+      // open where you left off: last-read book wins over book #1
+      var last = null;
+      try { last = localStorage.getItem("vena_last_book"); } catch (_) {}
+      var cur = self.bookDefs.find(function (b) { return b.id === self.state.book; })
+        || self.bookDefs.find(function (b) { return b.id === last; })
+        || self.bookDefs[0] || null;
+      self._navRestored = true;
       var meta = cur ? self._bySlug[cur.id] : null;
       var upd = { deleted: {} };
       if (cur) upd.book = cur.id;
@@ -2675,7 +2692,9 @@ class Component extends DCLogic {
     }).catch(function (e) {
       self._dlBusy = null;
       self.setState({ dl: { status: "idle", pct: 0, tier: tier } });
-      self._up(e);
+      V.call("get_settings").then(function (s) { self._settings = s; self.forceUpdate(); }).catch(function () {});
+      if (/stopped/i.test(String((e && e.message) || e))) self._toast("DOWNLOAD STOPPED — PARTIAL KEPT, RESUME ANYTIME");
+      else self._up(e);
     });
   };
 
@@ -2696,7 +2715,9 @@ class Component extends DCLogic {
     }).catch(function (e) {
       self._paintDlBusy = false;
       self.setState({ paintDl: { status: "idle", pct: 0 } });
-      self._up(e);
+      V.call("paint_tiers").then(function (ts) { self._paintTiers = ts || []; self.forceUpdate(); }).catch(function () {});
+      if (/stopped/i.test(String((e && e.message) || e))) self._toast("DOWNLOAD STOPPED — PARTIAL KEPT, RESUME ANYTIME");
+      else self._up(e);
     });
   };
 
@@ -3070,6 +3091,161 @@ class Component extends DCLogic {
     this._applyDesignFacts();
     this._applyDataPrivacy();
     this._applyMangaPages();
+    this._applyModelDel();
+    this._applyReaderA11y();
+    // remember the open book so the next launch resumes it (never before the
+    // boot restore in _hydrate has read the previous value)
+    if (this._navRestored) {
+      try {
+        if (this.state.book) localStorage.setItem("vena_last_book", this.state.book);
+      } catch (_) {}
+    }
+  };
+
+  // ------------------------------- reader type controls (Kindle-parity Aa)
+  P._readerScaleSet = function (dir) {
+    var steps = [0.85, 0.95, 1, 1.1, 1.2, 1.35, 1.5, 1.7];
+    var s = this._readerScale || 1;
+    if (dir === 0) s = 1;
+    else {
+      var i = steps.indexOf(s);
+      if (i < 0) i = 2;
+      s = steps[Math.max(0, Math.min(steps.length - 1, i + dir))];
+    }
+    this._readerScale = s;
+    try { localStorage.setItem("vena_reader_scale", String(s)); } catch (_) {}
+    this._applyReaderA11y();
+  };
+
+  P._readerLineSet = function () {
+    var cyc = ["", "1.9", "2.15"];
+    this._readerLine = cyc[(cyc.indexOf(this._readerLine || "") + 1) % cyc.length];
+    try { localStorage.setItem("vena_reader_line", this._readerLine); } catch (_) {}
+    this._applyReaderA11y();
+  };
+
+  P._applyReaderA11y = function () {
+    var self = this;
+    var box = document.querySelector("[data-vena-type]");
+    var ps = document.querySelectorAll(".vhub p");
+    // only over an open chapter — not the fresh-ledger / forging empty states
+    if (this.state.screen !== "reader" || !ps.length) { if (box) box.style.display = "none"; return; }
+    if (!box) {
+      box = document.createElement("div");
+      box.setAttribute("data-vena-type", "1");
+      box.setAttribute("role", "group");
+      box.setAttribute("aria-label", "Text size and line spacing");
+      box.style.cssText = "position:fixed;right:10px;bottom:96px;z-index:80;display:flex;gap:5px;background:var(--panel);border:2.5px solid var(--ink);box-shadow:3px 3px 0 var(--shdw);padding:5px";
+      var mk = function (label, aria, fn) {
+        var b = document.createElement("button");
+        b.textContent = label;
+        b.setAttribute("aria-label", aria);
+        b.style.cssText = "background:none;border:2px solid var(--ink);color:var(--ink);min-width:40px;min-height:40px;font-family:'IBM Plex Mono',monospace;font-size:12px;font-weight:700;cursor:pointer";
+        b.addEventListener("click", fn);
+        box.appendChild(b);
+        return b;
+      };
+      mk("A−", "Smaller text", function () { self._readerScaleSet(-1); });
+      box.__vPct = mk("100%", "Reset text size", function () { self._readerScaleSet(0); });
+      mk("A+", "Larger text", function () { self._readerScaleSet(1); });
+      mk("║", "Cycle line spacing", function () { self._readerLineSet(); });
+      document.body.appendChild(box);
+    }
+    box.style.display = "flex";
+    var scale = this._readerScale || 1;
+    if (box.__vPct) box.__vPct.textContent = Math.round(scale * 100) + "%";
+    Array.prototype.forEach.call(ps, function (p) {
+      if (p.__venaBaseFs == null) p.__venaBaseFs = parseFloat(window.getComputedStyle(p).fontSize) || 15;
+      var wantFs = scale === 1 ? "" : (p.__venaBaseFs * scale).toFixed(1) + "px";
+      if (p.style.fontSize !== wantFs) p.style.fontSize = wantFs;
+      if (p.style.lineHeight !== (self._readerLine || "")) p.style.lineHeight = self._readerLine || "";
+    });
+  };
+
+  // -------------------------------------------- model DELETE (parity w/ desktop)
+  // Installed or partial (dead download) weights get a two-tap DELETE ✕ on the
+  // tier row. Never anchors on the system bar's model badge — a row must hold
+  // the brand label, a "GB" size line and the tier's action button.
+  P._applyModelDel = function () {
+    var self = this;
+    var s = this._settings || {};
+    var dlNow = (this.state.dl || {}).status === "downloading" ? (this.state.dl || {}).tier : null;
+    var pdlNow = (this.state.paintDl || {}).status === "downloading" ? (this.state.paintDl || {}).tier : null;
+    var rows = [];
+    (s.tiers || []).forEach(function (t) {
+      if ((t.installed || t.partial) && t.id !== dlNow) {
+        rows.push({
+          brand: t.brand, gb: t.size_gb, cmd: "delete_local_model", tier: t.id,
+          after: function () { V.call("get_settings").then(function (x) { self._settings = x; self.forceUpdate(); }).catch(function () {}); }
+        });
+      }
+    });
+    (this._paintTiers || []).forEach(function (t) {
+      if ((t.installed || t.partial) && t.id !== pdlNow) {
+        rows.push({
+          brand: t.brand, gb: t.size_gb, cmd: "delete_paint_model", tier: t.id,
+          after: function () {
+            V.call("paint_tiers").then(function (ts) { self._paintTiers = ts || []; self.forceUpdate(); }).catch(function () {});
+            V.call("get_image_status").then(function (is) { self._imageStatus = is; self.forceUpdate(); }).catch(function () {});
+          }
+        });
+      }
+    });
+    var want = {};
+    rows.forEach(function (r) { want[r.brand] = true; });
+    Array.prototype.forEach.call(document.querySelectorAll("[data-vena-model-del]"), function (b) {
+      if (!want[b.getAttribute("data-vena-model-del")]) b.remove();
+    });
+    var findRow = function (brand) {
+      var labels = Array.prototype.filter.call(document.querySelectorAll("div,span"), function (el) {
+        return el.childElementCount === 0 && el.textContent === brand;
+      });
+      for (var i = 0; i < labels.length; i++) {
+        var p = labels[i].parentElement;
+        for (var d = 0; d < 5 && p; d++, p = p.parentElement) {
+          var txt = p.textContent || "";
+          if (txt.length > 600) break; // climbed out of the row
+          var btn = Array.prototype.filter.call(p.querySelectorAll("button"), function (x) {
+            return /DOWNLOAD|ACTIVATE|ACTIVE|INSTALLED|TOO BIG|VERIFYING|STOP|RESUME|GETTING/.test(x.textContent || "");
+          })[0];
+          if (btn && / GB/.test(txt)) return { row: p, main: btn };
+        }
+      }
+      return null;
+    };
+    rows.forEach(function (r) {
+      var hit = findRow(r.brand);
+      if (!hit || hit.row.querySelector("[data-vena-model-del]")) return;
+      var b = document.createElement("button");
+      b.setAttribute("data-vena-model-del", r.brand);
+      b.setAttribute("aria-label", "Delete " + r.brand + " from this device");
+      var rest = function () {
+        b.__vArmed = false;
+        b.textContent = "DELETE ✕";
+        b.style.borderColor = "var(--mut2)";
+        b.style.color = "var(--mut)";
+      };
+      b.style.cssText = "background:none;border:2px solid var(--mut2);color:var(--mut);min-height:34px;padding:6px 10px;margin-left:6px;font-family:'IBM Plex Mono',monospace;font-size:8px;letter-spacing:.06em;font-weight:600;cursor:pointer";
+      rest();
+      b.addEventListener("click", function (e) {
+        e.stopPropagation();
+        if (!b.__vArmed) {
+          b.__vArmed = true;
+          b.textContent = "SURE? ✕";
+          b.style.borderColor = "var(--red)";
+          b.style.color = "var(--red)";
+          setTimeout(function () { if (b.isConnected && b.__vArmed) rest(); }, 4000);
+          return;
+        }
+        b.textContent = "DELETING…";
+        V.call(r.cmd, { tier: r.tier }).then(function () {
+          self._toast(r.brand + " DELETED — " + r.gb.toFixed(1) + " GB FREED");
+          b.remove();
+          r.after();
+        }).catch(function (err) { b.remove(); self._up(err); });
+      });
+      hit.main.after(b);
+    });
   };
 
   // -------------------------------------------- static demo copy → real data
@@ -3492,13 +3668,17 @@ class Component extends DCLogic {
       if (st.dl.status === "done" && !installedId) installedId = st.dl.tier;
       v.models = s.tiers.map(function (t) {
         var blocked = t.id === "arch";
-        // the backend reports the weights actually on disk per tier
-        var installed = !!t.installed || t.id === installedId;
+        // install state is the plausible weights on disk (backend-checked) —
+        // stale flags and dead downloads never show INSTALLED
+        var installed = !!t.installed;
+        var partial = !!t.partial && !installed;
         var active = installed && st.model === t.id;
         var downloading = st.dl.status === "downloading" && st.dl.tier === t.id;
         return {
           id: t.id, chip: t.chip, name: t.brand,
-          size: t.size_gb.toFixed(1) + " GB" + (installed ? " · INSTALLED" : blocked ? " · NEEDS " + t.min_ram_gb + " GB" : ""),
+          size: t.size_gb.toFixed(1) + " GB" + (installed ? " · INSTALLED"
+            : partial ? " · PARTIAL — RESUME OR DELETE"
+              : blocked ? " · NEEDS " + t.min_ram_gb + " GB" : ""),
           desc: MODEL_DESCS[t.id] || "",
           installed: installed, blocked: blocked, active: active,
           op: blocked ? ".45" : "1",
@@ -3508,7 +3688,8 @@ class Component extends DCLogic {
           downloading: downloading,
           dlW: (downloading ? st.dl.pct : 0) + "%", dlPct: downloading ? st.dl.pct : 0,
           btnLabel: blocked ? "TOO BIG" : active ? "ACTIVE" : installed ? "ACTIVATE"
-            : downloading ? (st.dl.pct >= 99 ? "VERIFYING…" : "GETTING…") : "DOWNLOAD",
+            : downloading ? (st.dl.pct >= 99 ? "VERIFYING…" : "STOP ✕")
+              : partial ? "RESUME ↓" : "DOWNLOAD",
           btnBg: active ? "var(--cyan)" : "transparent",
           btnCol: active ? "var(--inv)" : blocked ? "var(--mut2)" : "var(--ink)",
           btnCur: blocked ? "default" : "pointer",
@@ -3517,7 +3698,11 @@ class Component extends DCLogic {
             if (e && e.stopPropagation) e.stopPropagation();
             if (blocked || active) return;
             if (installed) { self._activateLocal(t.id, t.brand); return; }
-            if (downloading) { self._toast("DOWNLOAD RUNNING — LET IT FINISH"); return; }
+            if (downloading) {
+              // STOP keeps the .part — the same button then offers RESUME
+              if (st.dl.pct < 99) V.call("cancel_model_download", { kind: "chat", tier: t.id }).catch(function () {});
+              return;
+            }
             self._startDl(t.id);
           },
         };
@@ -3533,12 +3718,13 @@ class Component extends DCLogic {
       };
       v.paintModels = this._paintTiers.map(function (t) {
         var installed = !!t.installed;
+        var partial = !!t.partial && !installed;
         var downloading = pDl.status === "downloading" && pDl.tier === t.id;
         return {
           id: "paint-" + t.id,
           chip: t.id === "sketch" ? "1.5" : "XL",
           name: t.brand,
-          size: t.size_gb.toFixed(1) + " GB" + (installed ? " · INSTALLED" : ""),
+          size: t.size_gb.toFixed(1) + " GB" + (installed ? " · INSTALLED" : partial ? " · PARTIAL — RESUME OR DELETE" : ""),
           desc: pDescs[t.id] || "",
           active: false, op: "1",
           shdw: installed ? "3px 3px 0 var(--cyan)" : "2px 2px 0 var(--shdw)",
@@ -3546,13 +3732,17 @@ class Component extends DCLogic {
           downloading: downloading,
           dlW: (downloading ? pDl.pct | 0 : 0) + "%", dlPct: downloading ? pDl.pct | 0 : 0,
           btnLabel: installed ? "INSTALLED ✓"
-            : downloading ? ((pDl.pct | 0) >= 99 ? "VERIFYING…" : "GETTING…") : "DOWNLOAD",
+            : downloading ? ((pDl.pct | 0) >= 99 ? "VERIFYING…" : "STOP ✕")
+              : partial ? "RESUME ↓" : "DOWNLOAD",
           btnAria: t.brand + (installed ? " — installed" : " — download"),
           btnBg: "transparent", btnCol: installed ? "var(--cyan)" : "var(--ink)",
-          btnCur: installed || downloading ? "default" : "pointer",
+          btnCur: installed ? "default" : "pointer",
           btnAct: function () {
             if (installed) return;
-            if (downloading) { self._toast("DOWNLOAD RUNNING — LET IT FINISH"); return; }
+            if (downloading) {
+              if ((pDl.pct | 0) < 99) V.call("cancel_model_download", { kind: "paint", tier: t.id }).catch(function () {});
+              return;
+            }
             self._startPaintDl(t.id);
           },
         };

@@ -523,6 +523,15 @@ fn paint_tiers(api: State<'_, Api>) -> Result<serde_json::Value, VenaError> {
 }
 
 #[tauri::command]
+fn cancel_model_download(
+    api: State<'_, Api>,
+    kind: String,
+    tier: String,
+) -> Result<serde_json::Value, VenaError> {
+    api.cancel_model_download(&kind, &tier)
+}
+
+#[tauri::command]
 fn delete_local_model(api: State<'_, Api>, tier: String) -> Result<serde_json::Value, VenaError> {
     api.delete_local_model(&tier)
 }
@@ -663,6 +672,7 @@ fn main() {
             get_image_status,
             paint_tiers,
             download_paint_model,
+            cancel_model_download,
             delete_local_model,
             delete_paint_model,
             get_manga_pages,

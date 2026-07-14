@@ -2801,6 +2801,15 @@ class Component extends DCLogic {
     this._venaMangaDom();
     this._venaComicsShelfDom();
     this._venaModelDelDom();
+    this._venaReaderA11y();
+    // remember where the reader is so the next launch opens right there —
+    // but never before the boot restore has read the previous values
+    if (this._navRestored) {
+      try {
+        if (this.state.book) localStorage.setItem('vena_last_book', this.state.book);
+        if (this.state.screen) localStorage.setItem('vena_last_screen', this.state.screen);
+      } catch (_) {}
+    }
   };
 
   P._venaInit = function () {
@@ -2819,6 +2828,35 @@ class Component extends DCLogic {
     };
     this._manga = null;
     this._turnSeq = 0;
+    // device reading prefs (type size / spacing) — restored across launches
+    try {
+      this._readerScale = parseFloat(localStorage.getItem('vena_reader_scale')) || 1;
+      this._readerLine = localStorage.getItem('vena_reader_line') || '';
+    } catch (_) { this._readerScale = 1; this._readerLine = ''; }
+    // reduced-motion: honor the OS setting across every design animation
+    if (!document.getElementById('vena-a11y-css')) {
+      const sty = document.createElement('style');
+      sty.id = 'vena-a11y-css';
+      sty.textContent = '@media (prefers-reduced-motion: reduce){*,*::before,*::after{animation-duration:.001s !important;animation-iteration-count:1 !important;transition-duration:.001s !important;scroll-behavior:auto !important}}';
+      document.head.appendChild(sty);
+    }
+    // keyboard: page-turn / zoom / close in the page view (Kindle-style)
+    if (!this._venaKeys) {
+      this._venaKeys = true;
+      document.addEventListener('keydown', e => {
+        if (!this.state.mangaOpen) return;
+        const tag = (e.target && e.target.tagName) || '';
+        if (tag === 'INPUT' || tag === 'TEXTAREA') return;
+        if (e.key === 'Escape') this.setState({ mangaOpen: false });
+        else if (e.key === 'ArrowRight') this._mangaFlip(1);
+        else if (e.key === 'ArrowLeft') this._mangaFlip(-1);
+        else if (e.key === '+' || e.key === '=') this._mangaZoomStep(1);
+        else if (e.key === '-') this._mangaZoomStep(-1);
+        else if (e.key === '0') this._mangaZoomSet(1);
+        else return;
+        e.preventDefault();
+      });
+    }
     // demo-state honesty: no fake serial countdown (no pacing engine exists),
     // no prefilled margin note from a chapter the reader never opened
     this.setState({ book: '', catalogs: [], tglSerial: false, notes: [] });
@@ -2827,11 +2865,20 @@ class Component extends DCLogic {
 
     V.call('list_books').then(books => {
       this._applyBooks(books);
-      const first = (books || [])[0];
+      // open where you left off: last book + last screen, not always book #1
+      let last = null;
+      try { last = localStorage.getItem('vena_last_book'); } catch (_) {}
+      const first = (books || []).find(b => b.slug === last) || (books || [])[0];
       if (first) {
         this.setState({ book: first.slug, chOverride: Math.max(1, first.progress_episode || 1) });
         this._loadBook(first);
       }
+      let scr = null;
+      try { scr = localStorage.getItem('vena_last_screen'); } catch (_) {}
+      if (first && ['library', 'store', 'companion', 'reader', 'archive', 'settings'].indexOf(scr) >= 0) {
+        this.setState({ screen: scr });
+      }
+      this._navRestored = true; // persistence may begin only AFTER restore ran
     }).catch(e => this._honest('SHELF UNREACHABLE', e));
 
     this._loadSettings();
@@ -3189,7 +3236,9 @@ class Component extends DCLogic {
     }).catch(e => {
       this._dlBusy = false;
       this.setState({ dl: { status: 'idle', pct: 0 } });
-      this._honest('MODEL DOWNLOAD FAILED', e);
+      this._loadSettings(); // refresh installed/partial truth from disk
+      if (/stopped/i.test(String((e && e.message) || e))) this._toast('DOWNLOAD STOPPED — PARTIAL KEPT, RESUME ANYTIME');
+      else this._honest('MODEL DOWNLOAD FAILED', e);
     });
   };
 
@@ -3208,7 +3257,9 @@ class Component extends DCLogic {
     }).catch(e => {
       this._paintDlBusy = false;
       this.setState({ paintDl: { status: 'idle', pct: 0 } });
-      this._honest('PAINT MODEL DOWNLOAD FAILED', e);
+      this._loadPaint(); // refresh installed/partial truth from disk
+      if (/stopped/i.test(String((e && e.message) || e))) this._toast('DOWNLOAD STOPPED — PARTIAL KEPT, RESUME ANYTIME');
+      else this._honest('PAINT MODEL DOWNLOAD FAILED', e);
     });
   };
 
@@ -3338,6 +3389,20 @@ class Component extends DCLogic {
     this._venaMangaDom();
   };
 
+  P._mangaZoomStep = function (d) {
+    const cur = MG_ZOOMS.indexOf(this._mangaZoom || 1);
+    this._mangaZoomSet(MG_ZOOMS[Math.max(0, Math.min(MG_ZOOMS.length - 1, (cur < 0 ? 0 : cur) + d))]);
+  };
+
+  // one page-turn step (spread-aware); dir −1 back, +1 forward
+  P._mangaFlip = function (dir) {
+    const M = this._manga;
+    if (!M) return;
+    const step = this.state.mangaSpread ? 2 : 1;
+    const cur = Math.max(1, Math.min(this.state.mangaPage || 1, M.count));
+    this.setState({ mangaPage: Math.max(1, Math.min(M.count, cur + dir * step)) });
+  };
+
   P._venaMangaDom = function () {
     if (!this.state.mangaOpen) {
       // leaving the viewer resets zoom/pan so the next open starts at FIT
@@ -3449,10 +3514,26 @@ class Component extends DCLogic {
     area.style.touchAction = 'none';
     // the ‹ › arrows must stay above a zoomed plate
     Array.prototype.forEach.call(area.children, c => {
-      if (c.tagName === 'BUTTON') { c.style.position = 'relative'; c.style.zIndex = '2'; }
+      if (c.tagName === 'BUTTON') {
+        c.style.position = 'relative';
+        c.style.zIndex = '2';
+        c.setAttribute('aria-label', c.textContent === '‹' ? 'Previous page' : 'Next page');
+      }
+    });
+    // Kindle-style edge taps: at fit, a click on the left/right side of the
+    // page area turns the page. Delayed slightly so a double-click still zooms.
+    area.addEventListener('click', e => {
+      if (e.target.tagName === 'BUTTON' || (this._mangaZoom || 1) > 1 || this._mangaDragging) return;
+      const r = area.getBoundingClientRect();
+      const frac = (e.clientX - r.left) / Math.max(1, r.width);
+      const dir = frac < 0.42 ? -1 : frac > 0.58 ? 1 : 0;
+      if (!dir) return;
+      clearTimeout(this._mangaTapT);
+      this._mangaTapT = setTimeout(() => this._mangaFlip(dir), 260);
     });
     area.addEventListener('dblclick', e => {
       if (e.target.tagName === 'BUTTON') return;
+      clearTimeout(this._mangaTapT); // a double-click zooms, never page-turns
       this._mangaZoomSet((this._mangaZoom || 1) > 1 ? 1 : 2);
     });
     area.addEventListener('pointerdown', e => {
@@ -3511,6 +3592,7 @@ class Component extends DCLogic {
         const b = document.createElement('button');
         b.textContent = label;
         b.title = title;
+        b.setAttribute('aria-label', title);
         b.style.cssText = ref ? ref.style.cssText
           : "background:none;border:2px solid var(--ink);color:var(--ink);padding:6px 11px;font-family:'IBM Plex Mono',monospace;font-size:9px;letter-spacing:.08em;font-weight:600;cursor:pointer";
         b.addEventListener('click', fn);
@@ -3524,6 +3606,80 @@ class Component extends DCLogic {
     }
     box.style.display = show ? 'inline-flex' : 'none';
     if (box.__vLbl) box.__vLbl.textContent = Math.round((this._mangaZoom || 1) * 100) + '%';
+  };
+
+  /* ---------------- reader type controls (Kindle-parity accessibility) ----
+   * A− / A+ scale the chapter type (85–170%, kept in localStorage — a device
+   * preference, not book data); ║ cycles line spacing. Injected overlay: the
+   * canonical reader template stays untouched. */
+  P._readerScaleSet = function (dir) {
+    const steps = [0.85, 0.95, 1, 1.1, 1.2, 1.35, 1.5, 1.7];
+    let s = this._readerScale || 1;
+    if (dir === 0) s = 1;
+    else {
+      let i = steps.indexOf(s);
+      if (i < 0) i = 2;
+      s = steps[Math.max(0, Math.min(steps.length - 1, i + dir))];
+    }
+    this._readerScale = s;
+    try { localStorage.setItem('vena_reader_scale', String(s)); } catch (_) {}
+    this._venaReaderA11y();
+  };
+
+  P._readerLineSet = function () {
+    const cyc = ['', '1.9', '2.15'];
+    this._readerLine = cyc[(cyc.indexOf(this._readerLine || '') + 1) % cyc.length];
+    try { localStorage.setItem('vena_reader_line', this._readerLine); } catch (_) {}
+    this._venaReaderA11y();
+  };
+
+  P._venaReaderA11y = function () {
+    let box = document.querySelector('[data-vena-type]');
+    const root = document.querySelector('.vhub');
+    const ps = root ? root.querySelectorAll('p') : [];
+    // only over an open chapter — not the fresh-ledger / forging empty states
+    if (this.state.screen !== 'reader' || !ps.length) { if (box) box.style.display = 'none'; return; }
+    if (!box) {
+      box = document.createElement('div');
+      box.setAttribute('data-vena-type', '1');
+      box.setAttribute('role', 'group');
+      box.setAttribute('aria-label', 'Text size and line spacing');
+      box.style.cssText = 'position:fixed;right:18px;bottom:18px;z-index:80;display:flex;gap:6px;background:var(--panel);border:2.5px solid var(--ink);box-shadow:4px 4px 0 var(--shdw);padding:6px';
+      const mk = (label, aria, fn) => {
+        const b = document.createElement('button');
+        b.textContent = label;
+        b.title = aria;
+        b.setAttribute('aria-label', aria);
+        b.style.cssText = "background:none;border:2px solid var(--ink);color:var(--ink);min-width:36px;min-height:36px;font-family:'IBM Plex Mono',monospace;font-size:11px;font-weight:700;cursor:pointer";
+        b.addEventListener('click', fn);
+        box.appendChild(b);
+        return b;
+      };
+      const est = document.createElement('span');
+      est.style.cssText = "align-self:center;font-family:'IBM Plex Mono',monospace;font-size:8px;letter-spacing:.08em;color:var(--mut2);padding:0 6px";
+      box.appendChild(est);
+      box.__vEst = est;
+      mk('A−', 'Smaller text', () => this._readerScaleSet(-1));
+      box.__vPct = mk('100%', 'Reset text size', () => this._readerScaleSet(0));
+      mk('A+', 'Larger text', () => this._readerScaleSet(1));
+      mk('║', 'Cycle line spacing', () => this._readerLineSet());
+      document.body.appendChild(box);
+    }
+    box.style.display = 'flex';
+    const scale = this._readerScale || 1;
+    if (box.__vPct) box.__vPct.textContent = Math.round(scale * 100) + '%';
+    // honest read-time estimate for the open chapter (≈220 wpm)
+    if (box.__vEst) {
+      const ep = this._vena && this._vena.episode;
+      const words = ep && ep.paras ? ep.paras.join(' ').split(/\s+/).length : 0;
+      box.__vEst.textContent = words ? '~' + Math.max(1, Math.round(words / 220)) + ' MIN CHAPTER' : '';
+    }
+    Array.prototype.forEach.call(ps, p => {
+      if (p.__venaBaseFs == null) p.__venaBaseFs = parseFloat(window.getComputedStyle(p).fontSize) || 16;
+      const wantFs = scale === 1 ? '' : (p.__venaBaseFs * scale).toFixed(1) + 'px';
+      if (p.style.fontSize !== wantFs) p.style.fontSize = wantFs;
+      if (p.style.lineHeight !== (this._readerLine || '')) p.style.lineHeight = this._readerLine || '';
+    });
   };
 
   /* ---------------- Comics & Manga shelf: real comics bind the section ----
@@ -3625,28 +3781,49 @@ class Component extends DCLogic {
   P._venaModelDelDom = function () {
     if (this.state.screen !== 'settings') return;
     const S = this._vena.settings || {};
+    const dlNow = (this.state.dl || {}).status === 'downloading' ? (this.state.dl || {}).tier : null;
+    const pdlNow = (this.state.paintDl || {}).status === 'downloading' ? (this.state.paintDl || {}).tier : null;
     const rows = [];
     (S.tiers || []).forEach(t => {
-      if (t.installed) rows.push({ brand: t.brand, gb: t.size_gb, cmd: 'delete_local_model', tier: t.id, after: () => this._loadSettings() });
+      // partial (dead/stopped download) is deletable too — it's disk junk.
+      // Not while actively downloading: STOP first, then delete.
+      if ((t.installed || t.partial) && t.id !== dlNow) rows.push({ brand: t.brand, gb: t.size_gb, cmd: 'delete_local_model', tier: t.id, after: () => this._loadSettings() });
     });
     (this._vena.paintTiers || []).forEach(t => {
-      if (t.installed) rows.push({ brand: t.brand, gb: t.size_gb, cmd: 'delete_paint_model', tier: t.id, after: () => this._loadPaint() });
+      if ((t.installed || t.partial) && t.id !== pdlNow) rows.push({ brand: t.brand, gb: t.size_gb, cmd: 'delete_paint_model', tier: t.id, after: () => this._loadPaint() });
     });
     const want = {};
     rows.forEach(r => { want[r.brand] = true; });
     Array.prototype.forEach.call(document.querySelectorAll('[data-vena-model-del]'), b => {
       if (!want[b.getAttribute('data-vena-model-del')]) b.remove();
     });
+    // a model row = a bounded container holding the brand label, a "GB" size
+    // line and the tier's action button. The FIRST text match in the document
+    // can be the system bar's model badge — never anchor there.
+    const findRow = brand => {
+      const labels = Array.prototype.filter.call(document.querySelectorAll('div,span'),
+        el => el.childElementCount === 0 && el.textContent === brand);
+      for (const lbl of labels) {
+        let p = lbl.parentElement;
+        for (let d = 0; d < 5 && p; d++, p = p.parentElement) {
+          const txt = p.textContent || '';
+          if (txt.length > 600) break; // climbed out of the row
+          const btn = Array.prototype.find.call(p.querySelectorAll('button'),
+            x => /DOWNLOAD|ACTIVATE|ACTIVE|INSTALLED|TOO BIG|VERIFYING|STOP|RESUME/.test(x.textContent || ''));
+          if (btn && / GB/.test(txt)) return { row: p, main: btn };
+        }
+      }
+      return null;
+    };
     rows.forEach(r => {
-      const lbl = Array.prototype.find.call(document.querySelectorAll('div,span'),
-        el => el.childElementCount === 0 && el.textContent === r.brand);
-      if (!lbl) return;
-      let row = lbl.parentElement;
-      while (row && !row.querySelector('button')) row = row.parentElement;
-      if (!row || row.querySelector('[data-vena-model-del]')) return;
-      const main = row.querySelector('button');
+      const hit = findRow(r.brand);
+      if (!hit) return;
+      const row = hit.row;
+      if (row.querySelector('[data-vena-model-del]')) return;
+      const main = hit.main;
       const b = document.createElement('button');
       b.setAttribute('data-vena-model-del', r.brand);
+      b.setAttribute('aria-label', 'Delete ' + r.brand + ' from this device');
       const rest = () => {
         b.__vArmed = false;
         b.textContent = 'DELETE ✕';
@@ -4178,9 +4355,11 @@ class Component extends DCLogic {
     };
     const tiers = (S && S.tiers) || [];
     const models = tiers.map(t => {
-      // per-tier install state is the weights on disk (backend), not just the
-      // last-downloaded model in settings
-      const installed = !!t.installed || !!(S && S.local_ready && S.local_model === t.brand);
+      // install state is the plausible weights actually on disk (backend-
+      // checked size) — a stale settings flag or a download that died never
+      // shows as INSTALLED; a half-file shows PARTIAL with resume
+      const installed = !!t.installed;
+      const partial = !!t.partial && !installed;
       const blocked = t.min_ram_gb > 8;
       const active = installed && S && S.default_chat_mode === 'local';
       const downloading = st.dl.status === 'downloading' && st.dl.tier === t.id;
@@ -4192,7 +4371,9 @@ class Component extends DCLogic {
       };
       return {
         id: t.id, chip: t.chip, name: t.brand,
-        size: t.size_gb.toFixed(1) + ' GB' + (installed ? ' · INSTALLED' : blocked ? ' · NEEDS ' + t.min_ram_gb + ' GB RAM' : ''),
+        size: t.size_gb.toFixed(1) + ' GB' + (installed ? ' · INSTALLED'
+          : partial ? ' · PARTIAL — RESUME OR DELETE'
+            : blocked ? ' · NEEDS ' + t.min_ram_gb + ' GB RAM' : ''),
         desc: tierDescs[t.id] || '',
         active,
         op: blocked ? '.45' : '1',
@@ -4201,14 +4382,20 @@ class Component extends DCLogic {
         chipBg: active ? 'var(--cyan)' : 'var(--ink)', chipCol: 'var(--inv)',
         downloading, dlW: (st.dl.pct | 0) + '%', dlPct: st.dl.pct | 0,
         btnLabel: blocked ? 'TOO BIG' : active ? 'ACTIVE' : installed ? 'ACTIVATE'
-          : downloading ? ((st.dl.pct | 0) >= 99 ? 'VERIFYING…' : 'DOWNLOADING…') : 'DOWNLOAD',
+          : downloading ? ((st.dl.pct | 0) >= 99 ? 'VERIFYING…' : 'STOP ✕')
+            : partial ? 'RESUME ↓' : 'DOWNLOAD',
         btnBg: active ? 'var(--cyan)' : 'transparent',
         btnCol: active ? 'var(--inv)' : blocked ? 'var(--mut2)' : 'var(--ink)',
         btnCur: blocked ? 'default' : 'pointer',
         pick: () => { if (installed && !active) activate(); },
         btnAct: e => {
           e && e.stopPropagation && e.stopPropagation();
-          if (blocked || active || downloading) return;
+          if (blocked || active) return;
+          if (downloading) {
+            // STOP keeps the .part — the same button then offers RESUME
+            if ((st.dl.pct | 0) < 99) V.call('cancel_model_download', { kind: 'chat', tier: t.id }).catch(() => {});
+            return;
+          }
           if (installed) activate(); else this._startDl(t.id);
         }
       };
@@ -4227,12 +4414,13 @@ class Component extends DCLogic {
     };
     const paintModels = (D.paintTiers || []).map(t => {
       const installed = !!t.installed;
+      const partial = !!t.partial && !installed;
       const downloading = pDl.status === 'downloading' && pDl.tier === t.id;
       return {
         id: 'paint-' + t.id,
         chip: t.id === 'sketch' ? '1.5' : 'XL',
         name: t.brand,
-        size: t.size_gb.toFixed(1) + ' GB' + (installed ? ' · INSTALLED' : ''),
+        size: t.size_gb.toFixed(1) + ' GB' + (installed ? ' · INSTALLED' : partial ? ' · PARTIAL — RESUME OR DELETE' : ''),
         desc: paintDescs[t.id] || '',
         active: false,
         op: '1', cur: 'default',
@@ -4240,14 +4428,19 @@ class Component extends DCLogic {
         chipBg: installed ? 'var(--cyan)' : 'var(--ink)', chipCol: 'var(--inv)',
         downloading, dlW: (downloading ? pDl.pct | 0 : 0) + '%', dlPct: downloading ? pDl.pct | 0 : 0,
         btnLabel: installed ? 'INSTALLED ✓'
-          : downloading ? ((pDl.pct | 0) >= 99 ? 'VERIFYING…' : 'DOWNLOADING…') : 'DOWNLOAD',
+          : downloading ? ((pDl.pct | 0) >= 99 ? 'VERIFYING…' : 'STOP ✕')
+            : partial ? 'RESUME ↓' : 'DOWNLOAD',
         btnAria: t.brand + (installed ? ' — installed' : ' — download'),
         btnBg: 'transparent', btnCol: installed ? 'var(--cyan)' : 'var(--ink)',
         btnCur: installed || downloading ? 'default' : 'pointer',
         pick: noop,
         btnAct: e => {
           e && e.stopPropagation && e.stopPropagation();
-          if (installed || downloading) return;
+          if (installed) return;
+          if (downloading) {
+            if ((pDl.pct | 0) < 99) V.call('cancel_model_download', { kind: 'paint', tier: t.id }).catch(() => {});
+            return;
+          }
           this._startPaintDl(t.id);
         }
       };

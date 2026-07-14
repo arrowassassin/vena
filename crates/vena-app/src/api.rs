@@ -808,6 +808,20 @@ impl AppApi {
     }
 
     pub fn set_chat_mode(&self, mode: &str) -> Result<()> {
+        // Switching to local only sticks when a local server actually answers —
+        // otherwise every turn after the switch would fail with a dead socket.
+        if mode == "local" {
+            let base = {
+                let store = self.store();
+                self.setting_or(&store, K_LOCAL_BASE, "http://localhost:11434")
+            };
+            if !crate::net::probe_openai_base(&base) {
+                return Err(VenaError::Other(format!(
+                    "no local engine at {base} — start Ollama, LM Studio or llama-server \
+                     (any OpenAI-compatible server) first, then activate"
+                )));
+            }
+        }
         self.store().set_setting(K_CHAT_MODE, mode)
     }
 
@@ -926,14 +940,20 @@ impl AppApi {
             "local_model": self.setting_or(&store, K_LOCAL_MODEL, ""),
             "local_ready": self.setting_bool_locked(&store, K_LOCAL_READY, false),
             // per-tier install state comes from the weights actually on disk,
-            // so every downloaded tier (not just the last one) shows as such
+            // so every downloaded tier (not just the last one) shows as such.
+            // A file that is missing most of its bytes (killed download, manual
+            // truncation) reports partial, NOT installed — resume or delete it.
             "tiers": MODEL_TIERS
                 .iter()
                 .map(|t| {
+                    let path = self.tier_gguf_path(t);
+                    let installed = weights_plausible(&path, t.size_gb);
                     serde_json::json!({
                         "id": t.id, "brand": t.brand, "chip": t.chip, "gguf": t.gguf,
                         "size_gb": t.size_gb, "min_ram_gb": t.min_ram_gb,
-                        "installed": self.tier_gguf_path(t).exists(),
+                        "installed": installed,
+                        "partial": !installed
+                            && (path.with_extension("part").exists() || path.exists()),
                     })
                 })
                 .collect::<Vec<_>>(),
@@ -944,6 +964,26 @@ impl AppApi {
         self.data_dir
             .join("models")
             .join(format!("{}.gguf", t.gguf))
+    }
+
+    /// Stop an in-flight model download (chat or paint tier). The partial file
+    /// stays on disk, so the tier shows PARTIAL and RESUME continues from it.
+    pub fn cancel_model_download(&self, kind: &str, tier: &str) -> Result<serde_json::Value> {
+        let path = if kind == "paint" {
+            let (.., file, _) = PAINT_TIERS
+                .iter()
+                .find(|(id, brand, ..)| *id == tier || *brand == tier)
+                .ok_or_else(|| VenaError::Other(format!("unknown paint tier {tier}")))?;
+            self.data_dir.join("models/paint").join(file)
+        } else {
+            let t = MODEL_TIERS
+                .iter()
+                .find(|m| m.id == tier || m.chip == tier || m.brand == tier)
+                .ok_or_else(|| VenaError::Other(format!("unknown tier {tier}")))?;
+            self.tier_gguf_path(t)
+        };
+        crate::net::cancel_download(&path);
+        Ok(serde_json::json!({ "cancelled": true }))
     }
 
     /// Delete a downloaded chat tier's weights (and any half-finished .part).
@@ -1278,6 +1318,15 @@ impl AppApi {
                     return Err(VenaError::NoBackend);
                 }
                 let base = self.setting_or(store, K_LOCAL_BASE, "http://localhost:11434");
+                // Pre-flight instead of a raw connection error mid-turn. NO silent
+                // cloud fallback: the reader chose local — content stays on-device.
+                if !crate::net::probe_openai_base(&base) {
+                    return Err(VenaError::Other(format!(
+                        "local engine offline — nothing is answering at {base}. Start your \
+                         local model server (Ollama, LM Studio, or llama-server with the \
+                         downloaded GGUF), or switch chat to Cloud Relay in Settings"
+                    )));
+                }
                 let model = self.setting_or(store, K_LOCAL_MODEL, "qwen3");
                 Ok(Box::new(OpenAiClient::new(&base, "", &model)))
             }
@@ -1354,6 +1403,14 @@ fn normalize_theory(s: &str) -> String {
 
 /// Settings key for "this device's local tier passed the gate", keyed by model so
 /// each tier is validated independently.
+/// A weights file counts as installed only when it holds most of its expected
+/// bytes — a killed download or truncated file must not masquerade as a model.
+fn weights_plausible(path: &Path, size_gb: f32) -> bool {
+    std::fs::metadata(path)
+        .map(|m| m.len() as f64 >= f64::from(size_gb) * 0.5 * 1_000_000_000.0)
+        .unwrap_or(false)
+}
+
 fn local_validated_key(model: &str) -> String {
     format!("local_validated::{}", model.to_lowercase())
 }
@@ -1584,9 +1641,9 @@ pub const PAINT_TIERS: &[(&str, &str, &str, &str, f32)] = &[
     (
         "easel",
         "EASEL·XL",
-        "second-state/stable-diffusion-xl-base-1.0-GGUF",
-        "sd_xl_base_1.0-Q8_0.gguf",
-        3.6,
+        "gpustack/stable-diffusion-xl-base-1.0-GGUF",
+        "stable-diffusion-xl-base-1.0-Q8_0.gguf",
+        4.3,
     ),
 ];
 
@@ -1596,10 +1653,16 @@ impl AppApi {
         let dir = self.data_dir.join("models/paint");
         serde_json::json!(PAINT_TIERS
             .iter()
-            .map(|(id, brand, _repo, file, size)| serde_json::json!({
-                "id": id, "brand": brand, "size_gb": size,
-                "installed": dir.join(file).exists(),
-            }))
+            .map(|(id, brand, _repo, file, size)| {
+                let path = dir.join(file);
+                let installed = weights_plausible(&path, *size);
+                serde_json::json!({
+                    "id": id, "brand": brand, "size_gb": size,
+                    "installed": installed,
+                    "partial": !installed
+                        && (path.with_extension("part").exists() || path.exists()),
+                })
+            })
             .collect::<Vec<_>>())
     }
 

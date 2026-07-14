@@ -44,6 +44,42 @@ fn dl_client() -> &'static reqwest::blocking::Client {
     })
 }
 
+/// Quick liveness probe for a local OpenAI-compatible server (Ollama, LM
+/// Studio, llama-server). 2s budget — used as a pre-flight so a dead socket
+/// becomes an honest "engine offline" message instead of a mid-turn failure.
+pub fn probe_openai_base(base: &str) -> bool {
+    let root = base
+        .trim_end_matches('/')
+        .trim_end_matches("/v1")
+        .trim_end_matches('/');
+    let url = format!("{root}/v1/models");
+    reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(2))
+        .build()
+        .ok()
+        .and_then(|c| c.get(&url).send().ok())
+        // 404 still proves a server is listening (some lack /v1/models)
+        .map(|r| r.status().is_success() || r.status().as_u16() == 404)
+        .unwrap_or(false)
+}
+
+/// Cancellation registry for in-flight downloads, keyed by destination path.
+/// `cancel_download(dest)` flags it; the streaming loop notices between chunks
+/// and stops, KEEPING the .part file so the next attempt resumes.
+fn cancels() -> &'static std::sync::Mutex<std::collections::HashSet<std::path::PathBuf>> {
+    static C: std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<std::path::PathBuf>>> =
+        std::sync::OnceLock::new();
+    C.get_or_init(|| std::sync::Mutex::new(std::collections::HashSet::new()))
+}
+
+pub fn cancel_download(dest: &Path) {
+    cancels().lock().unwrap().insert(dest.to_path_buf());
+}
+
+fn take_cancel(dest: &Path) -> bool {
+    cancels().lock().unwrap().remove(dest)
+}
+
 /// RESUMABLE streaming download. Partial data lands in `<dest>.part`; re-invocation
 /// continues with a Range request; the file is renamed into place only when complete
 /// (and, when a digest is supplied, SHA-256-verified).
@@ -62,6 +98,7 @@ pub fn download_file_verified(
     if let Some(parent) = dest.parent() {
         std::fs::create_dir_all(parent)?;
     }
+    let _ = take_cancel(dest); // clear any stale flag from a finished run
     let part = dest.with_extension("part");
     let already: u64 = std::fs::metadata(&part).map(|m| m.len()).unwrap_or(0);
 
@@ -104,6 +141,11 @@ pub fn download_file_verified(
         }
         file.write_all(&buf[..n])?;
         downloaded += n as u64;
+        if take_cancel(dest) {
+            return Err(VenaError::Other(
+                "download stopped — the partial file is kept; RESUME picks up from here".into(),
+            ));
+        }
         if total > 0 {
             // bytes stop at 98 — 99 is the SHA-verify phase (hashing a multi-GB
             // file takes real time; the UI shows VERIFYING instead of a dead bar)
