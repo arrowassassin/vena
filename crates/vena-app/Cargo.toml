@@ -12,6 +12,10 @@ default-run = "vena"
 [lib]
 name = "vena_app"
 path = "src/lib.rs"
+# Tauri mobile (Android/iOS) links the app as a shared library, so the lib must
+# emit a cdylib (libvena_app.so); staticlib + rlib keep the desktop bin and the
+# test harness building as before.
+crate-type = ["staticlib", "cdylib", "rlib"]
 
 # The Tauri desktop/mobile binary. Skipped by a plain `cargo build`/`test` (needs
 # webkit2gtk etc.); built on a dev machine with `--features tauri`.
