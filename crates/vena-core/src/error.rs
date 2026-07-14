@@ -59,3 +59,55 @@ impl serde::Serialize for VenaError {
 }
 
 pub type Result<T> = std::result::Result<T, VenaError>;
+
+#[cfg(test)]
+mod tests {
+    use super::VenaError;
+
+    #[test]
+    fn codes_are_stable_and_message_renders() {
+        assert_eq!(VenaError::NotFound("x".into()).code(), "NotFound");
+        assert_eq!(VenaError::NoBackend.code(), "NoBackend");
+        assert_eq!(
+            VenaError::NetworkNotAllowed("h".into()).code(),
+            "NetworkNotAllowed"
+        );
+        assert_eq!(
+            VenaError::SpoilerConsentRequired.code(),
+            "SpoilerConsentRequired"
+        );
+        assert!(VenaError::Other("boom".into()).to_string().contains("boom"));
+    }
+
+    #[test]
+    fn io_error_converts_and_keeps_code() {
+        let e: VenaError = std::io::Error::new(std::io::ErrorKind::NotFound, "nope").into();
+        assert_eq!(e.code(), "Io");
+        assert!(e.to_string().contains("nope"));
+    }
+
+    #[test]
+    fn remaining_codes_and_from_conversions() {
+        assert_eq!(
+            VenaError::InvalidPackage("p".into()).code(),
+            "InvalidPackage"
+        );
+        assert_eq!(VenaError::Inference("i".into()).code(), "Inference");
+        // From<serde_json::Error>
+        let je: VenaError = serde_json::from_str::<i32>("not json").unwrap_err().into();
+        assert_eq!(je.code(), "Json");
+        // From<rusqlite::Error>
+        let de: VenaError = rusqlite::Error::QueryReturnedNoRows.into();
+        assert_eq!(de.code(), "Db");
+        // From<zip::result::ZipError>
+        let ze: VenaError = zip::result::ZipError::FileNotFound.into();
+        assert_eq!(ze.code(), "Zip");
+    }
+
+    #[test]
+    fn serializes_to_code_and_message() {
+        let json = serde_json::to_value(VenaError::NoBackend).unwrap();
+        assert_eq!(json["code"], "NoBackend");
+        assert!(json["message"].as_str().unwrap().contains("backend"));
+    }
+}

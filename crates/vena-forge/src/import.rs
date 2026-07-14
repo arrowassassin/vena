@@ -47,6 +47,13 @@ pub struct ImportedBook {
 }
 
 pub fn import_path(path: &Path) -> Result<ImportedBook> {
+    import_path_in(path, None)
+}
+
+/// Import a file, extracting any comic pages into `asset_dir` (falls back to
+/// `$VENA_ASSET_DIR` / a temp dir when `None`). Passing the dir explicitly
+/// avoids relying on a process-global env var — safe under concurrency.
+pub fn import_path_in(path: &Path, asset_dir: Option<&Path>) -> Result<ImportedBook> {
     match path
         .extension()
         .and_then(|e| e.to_str())
@@ -54,7 +61,7 @@ pub fn import_path(path: &Path) -> Result<ImportedBook> {
         .as_deref()
     {
         Some("epub") => import_epub(path),
-        Some("cbz") => import_cbz(path),
+        Some("cbz") => import_cbz_in(path, asset_dir),
         Some("txt") | Some("text") | Some("md") | Some("markdown") | None => {
             let raw = std::fs::read_to_string(path)?;
             let (title, author) = (
@@ -502,14 +509,20 @@ fn html_unescape(s: &str) -> String {
 /// `get_manga_page`); each page becomes one "episode" so progress mechanics work
 /// unchanged. No prose ⇒ no ledger; the manual-progress companion applies.
 pub fn import_cbz(path: &Path) -> Result<ImportedBook> {
+    import_cbz_in(path, None)
+}
+
+pub fn import_cbz_in(path: &Path, asset_dir: Option<&Path>) -> Result<ImportedBook> {
     let stem = path
         .file_stem()
         .and_then(|s| s.to_str())
         .unwrap_or("comic")
         .to_string();
-    let assets = std::env::var("VENA_ASSET_DIR")
-        .map(std::path::PathBuf::from)
-        .unwrap_or_else(|_| std::env::temp_dir().join("vena-assets"));
+    let assets = asset_dir.map(std::path::PathBuf::from).unwrap_or_else(|| {
+        std::env::var("VENA_ASSET_DIR")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|_| std::env::temp_dir().join("vena-assets"))
+    });
     let slug_dir = assets.join("manga").join(slug_of(&stem));
     std::fs::create_dir_all(&slug_dir)?;
 
@@ -575,4 +588,207 @@ fn slug_of(s: &str) -> String {
         .filter(|p| !p.is_empty())
         .collect::<Vec<_>>()
         .join("-")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn clean_gutenberg_strips_boilerplate() {
+        let raw = "preamble junk\r\n*** START OF THE BOOK ***\r\nReal text here.\r\n*** END OF THE BOOK ***\r\nlicense tail";
+        let out = clean_gutenberg(raw);
+        assert!(out.contains("Real text here."));
+        assert!(!out.contains("preamble junk"));
+        assert!(!out.contains("license tail"));
+        assert!(!out.contains('\r'), "CRLF normalized");
+    }
+
+    #[test]
+    fn split_chapters_on_headers_and_drops_toc_stubs() {
+        let body = |n: usize| vec!["word"; n].join(" ");
+        let text = format!(
+            "CHAPTER I\n\n{}\n\nCHAPTER II\n\nSHORT\n\nCHAPTER III\n\n{}\n",
+            body(200),
+            body(200)
+        );
+        let chapters = split_text_into_chapters(&text);
+        // CH I and CH III survive; CH II (a 1-word stub) is dropped.
+        assert_eq!(chapters.len(), 2);
+        assert_eq!(chapters[0].seq, 1);
+        assert_eq!(chapters[1].seq, 2);
+    }
+
+    #[test]
+    fn no_headers_yields_single_chapter() {
+        let text = "Just some prose.\n\nA second paragraph here.\n";
+        let ch = split_text_into_chapters(text);
+        assert_eq!(ch.len(), 1);
+        assert_eq!(ch[0].paragraphs.len(), 2);
+    }
+
+    #[test]
+    fn html_to_paragraphs_and_title() {
+        let xhtml = "<html><head><title>A Chapter</title></head><body>\
+            <p>First para.</p><p>Second &amp; para.</p><p></p></body></html>";
+        let paras = html_to_paragraphs(xhtml);
+        assert_eq!(paras.len(), 2, "empty <p> dropped: {paras:?}");
+        assert!(paras[1].contains("&") || paras[1].contains("Second"));
+        assert_eq!(extract_html_title(xhtml).as_deref(), Some("A Chapter"));
+    }
+
+    #[test]
+    fn between_and_html_escape() {
+        assert_eq!(between("<a>hi</a>", "<a>", "</a>").as_deref(), Some("hi"));
+        assert_eq!(between("no tags", "<a>", "</a>"), None);
+        assert_eq!(html_escape("a<b>&c"), "a&lt;b&gt;&amp;c");
+    }
+
+    #[test]
+    fn opf_manifest_and_spine_parse() {
+        let opf = r#"<package>
+          <manifest>
+            <item id="c1" href="ch1.xhtml" media-type="application/xhtml+xml"/>
+            <item id="css" href="s.css" media-type="text/css"/>
+          </manifest>
+          <spine>
+            <itemref idref="c1"/>
+          </spine>
+        </package>"#;
+        let manifest = parse_manifest(opf);
+        assert_eq!(manifest.get("c1").unwrap().0, "ch1.xhtml");
+        let spine = parse_spine(opf);
+        assert_eq!(spine, vec!["c1".to_string()]);
+    }
+
+    #[test]
+    fn join_resolves_relative_hrefs() {
+        // base is the OPF's DIRECTORY; empty base (OPF at root) keeps href as-is
+        assert_eq!(join("OEBPS", "ch1.xhtml"), "OEBPS/ch1.xhtml");
+        assert_eq!(join("", "text/ch1.xhtml"), "text/ch1.xhtml");
+    }
+
+    #[test]
+    fn titlecase_and_stem() {
+        assert_eq!(titlecase("THE GREAT BOOK"), "The Great Book");
+        assert_eq!(
+            stem(std::path::Path::new("/x/Pride and Prejudice.epub")),
+            "Pride and Prejudice"
+        );
+    }
+
+    /// Build a minimal but real EPUB (mimetype + container.xml + OPF + two
+    /// chapter documents + a cover image) so import_epub runs end to end.
+    fn write_epub(path: &Path) {
+        use std::io::Write;
+        let f = std::fs::File::create(path).unwrap();
+        let mut zip = zip::ZipWriter::new(f);
+        let stored: zip::write::FileOptions<'_, ()> =
+            zip::write::FileOptions::default().compression_method(zip::CompressionMethod::Stored);
+        // mimetype MUST be first and stored
+        zip.start_file("mimetype", stored).unwrap();
+        zip.write_all(b"application/epub+zip").unwrap();
+
+        let deflated: zip::write::FileOptions<'_, ()> = zip::write::FileOptions::default();
+        zip.start_file("META-INF/container.xml", deflated).unwrap();
+        zip.write_all(
+            br#"<?xml version="1.0"?>
+            <container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container">
+              <rootfiles><rootfile full-path="OEBPS/content.opf"
+                media-type="application/oebps-package+xml"/></rootfiles>
+            </container>"#,
+        )
+        .unwrap();
+
+        zip.start_file("OEBPS/content.opf", deflated).unwrap();
+        zip.write_all(
+            br#"<?xml version="1.0"?>
+            <package xmlns="http://www.idpf.org/2007/opf" version="3.0">
+              <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
+                <dc:title>A Real Little Book</dc:title>
+                <dc:creator>Test Author</dc:creator>
+              </metadata>
+              <manifest>
+                <item id="cover-image" href="cover.png" media-type="image/png"/>
+                <item id="c1" href="ch1.xhtml" media-type="application/xhtml+xml"/>
+                <item id="c2" href="ch2.xhtml" media-type="application/xhtml+xml"/>
+                <item id="nav" href="nav.xhtml" media-type="application/xhtml+xml"/>
+              </manifest>
+              <spine>
+                <itemref idref="nav"/>
+                <itemref idref="c1"/>
+                <itemref idref="c2"/>
+              </spine>
+            </package>"#,
+        )
+        .unwrap();
+
+        // nav doc is short → dropped by the <40-word filter
+        zip.start_file("OEBPS/nav.xhtml", deflated).unwrap();
+        zip.write_all(b"<html><body><nav>Contents</nav></body></html>")
+            .unwrap();
+
+        let para = vec!["word"; 80].join(" ");
+        for (name, title) in [("ch1.xhtml", "Chapter One"), ("ch2.xhtml", "Chapter Two")] {
+            zip.start_file(format!("OEBPS/{name}"), deflated).unwrap();
+            zip.write_all(
+                format!(
+                    "<html><head><title>{title}</title></head><body><p>{para}</p></body></html>"
+                )
+                .as_bytes(),
+            )
+            .unwrap();
+        }
+
+        zip.start_file("OEBPS/cover.png", deflated).unwrap();
+        zip.write_all(&[0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A])
+            .unwrap();
+
+        zip.finish().unwrap();
+    }
+
+    #[test]
+    fn import_epub_reads_metadata_spine_and_cover() {
+        let dir = tempfile::tempdir().unwrap();
+        let epub = dir.path().join("book.epub");
+        write_epub(&epub);
+        let book = import_epub(&epub).unwrap();
+        assert_eq!(book.title, "A Real Little Book");
+        assert_eq!(book.author.as_deref(), Some("Test Author"));
+        // two real chapters (the short nav doc is filtered out)
+        assert_eq!(book.chapters.len(), 2);
+        assert_eq!(book.chapters[0].title.as_deref(), Some("Chapter One"));
+        // cover image was extracted
+        assert!(book.cover.is_some());
+        assert_eq!(book.cover_name.as_deref(), Some("cover.png"));
+        // reflowable prose with 1 image → prose profile
+        assert_eq!(book.profile, "prose");
+        assert!(book.profile_evidence.contains("reflowable"));
+    }
+
+    #[test]
+    fn import_path_dispatches_by_extension() {
+        let dir = tempfile::tempdir().unwrap();
+        // .epub routes to import_epub
+        let epub = dir.path().join("x.epub");
+        write_epub(&epub);
+        assert_eq!(import_path(&epub).unwrap().profile, "prose");
+        // an unreadable/again-missing path errors rather than panics
+        assert!(import_path(&dir.path().join("nope.epub")).is_err());
+    }
+
+    #[test]
+    fn detect_profile_classifies_comic_and_illustrated() {
+        // fixed-layout ⇒ comic
+        assert_eq!(detect_profile(true, false, 10, 5, 10).0, "comic");
+        // image-per-doc but real text ⇒ illustrated-prose
+        assert_eq!(
+            detect_profile(false, false, 10, 400, 10).0,
+            "illustrated-prose"
+        );
+        // plain reflowable ⇒ prose, RTL noted in evidence
+        let (p, ev) = detect_profile(false, true, 0, 2000, 12);
+        assert_eq!(p, "prose");
+        assert!(ev.contains("RTL"));
+    }
 }

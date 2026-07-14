@@ -324,3 +324,44 @@ fn parse_json_lax<T: for<'de> Deserialize<'de>>(raw: &str) -> Result<T> {
     let end = raw.rfind('}').context("no closing brace in reply")? + 1;
     Ok(serde_json::from_str(&raw[start..end])?)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn load_curated_parses_full_ledger() {
+        let json = r#"{
+          "title": "Test Book", "author": "A. Writer", "slug": "test-book",
+          "characters": [
+            {"name": "Alice", "aliases": ["Al"], "first_appearance_chapter": 1}
+          ],
+          "entities": [{"kind": "place", "name": "The Manor"}],
+          "facts": [
+            {"chapter": 1, "kind": "event", "text": "Alice arrives",
+             "known_by": [{"character": "Alice", "learned_at": 1}], "spoiler_weight": 1},
+            {"chapter": 5, "kind": "death", "text": "Someone dies"}
+          ],
+          "edges": [
+            {"from": "char:Alice", "to": "place:The Manor", "rel_type": "visits", "since_chapter": 1}
+          ]
+        }"#;
+        let (curated, ledger) = load_curated(json).unwrap();
+        assert_eq!(curated.slug, "test-book");
+        assert_eq!(curated.license, "public-domain"); // defaulted
+        assert_eq!(ledger.characters.len(), 1);
+        assert_eq!(ledger.entities.len(), 1);
+        assert_eq!(ledger.facts.len(), 2);
+        assert_eq!(ledger.edges.len(), 1);
+        // spoiler_weight defaults to 1 when omitted (the ch5 death)
+        assert_eq!(ledger.facts[1].spoiler_weight, 1);
+        // known_by learned_at defaults to the fact's chapter when omitted
+        assert_eq!(ledger.characters[0].name, "Alice");
+    }
+
+    #[test]
+    fn load_curated_rejects_malformed_json() {
+        assert!(load_curated("{ not json").is_err());
+        assert!(load_curated(r#"{"title":"x"}"#).is_err()); // missing required slug
+    }
+}

@@ -305,7 +305,49 @@ impl Inference for OpenAiClient {
 
 #[cfg(test)]
 mod url_tests {
-    use super::OpenAiClient;
+    use super::{GenOptions, Inference, OpenAiClient, ScriptedInference};
+
+    #[test]
+    fn is_remote_host_uses_shared_parser() {
+        // loopback bases are on-device
+        assert!(!OpenAiClient::new("http://localhost:11434/v1", "", "m").is_remote());
+        assert!(!OpenAiClient::new("http://127.0.0.1:5000", "", "m").is_remote());
+        // a userinfo authority pointing at a remote host must NOT read as local
+        assert!(OpenAiClient::new("http://localhost:pw@evil.com/v1", "k", "m").is_remote());
+        assert!(OpenAiClient::new("https://api.openai.com/v1", "k", "m").is_remote());
+    }
+
+    #[test]
+    fn default_chat_flattens_history_into_prompt() {
+        // ScriptedInference doesn't override chat(); the default flattens turns.
+        let backend = ScriptedInference::new(vec!["ok".into()]);
+        let history = vec![
+            ("user".to_string(), "first question".to_string()),
+            ("assistant".to_string(), "first answer".to_string()),
+        ];
+        let out = backend
+            .chat("system", &history, "next", &GenOptions::default())
+            .unwrap();
+        assert_eq!(out, "ok");
+        // with no history, chat == complete
+        let out2 = backend
+            .chat("sys", &[], "hi", &GenOptions::default())
+            .unwrap();
+        assert!(!out2.is_empty());
+    }
+
+    #[test]
+    fn scripted_drains_then_falls_back() {
+        let backend = ScriptedInference::new(vec!["one".into()]).with_fallback("empty");
+        assert_eq!(
+            backend.complete("s", "u", &GenOptions::default()).unwrap(),
+            "one"
+        );
+        assert_eq!(
+            backend.complete("s", "u", &GenOptions::default()).unwrap(),
+            "empty"
+        );
+    }
 
     #[test]
     fn chat_endpoint_never_doubles_v1() {

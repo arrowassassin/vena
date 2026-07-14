@@ -18,3 +18,24 @@ pub fn assert_gguf(path: &std::path::Path) -> Result<()> {
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn accepts_gguf_magic_rejects_other() {
+        let dir = std::env::temp_dir().join(format!("vena-gguf-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let good = dir.join("ok.gguf");
+        std::fs::write(&good, b"GGUF\x00\x00\x00\x03rest").unwrap();
+        assert!(assert_gguf(&good).is_ok());
+
+        let bad = dir.join("bad.gguf");
+        std::fs::write(&bad, b"<htmlerror>").unwrap();
+        assert!(assert_gguf(&bad).is_err());
+
+        assert!(assert_gguf(&dir.join("missing.gguf")).is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}

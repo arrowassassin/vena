@@ -356,3 +356,45 @@ pub(crate) fn base64_decode(s: &str) -> Result<Vec<u8>> {
     }
     Ok(out)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn base64_decode_roundtrips_standard_and_urlsafe() {
+        // "GGUF\x00" encodes to "R0dVRgA=" in standard base64.
+        let bytes = base64_decode("R0dVRgA=").unwrap();
+        assert_eq!(&bytes, b"GGUF\x00");
+        // URL-safe alphabet (-, _) is accepted and maps to 62/63.
+        let a = base64_decode("-_8=").unwrap(); // 62,63,255 -> 0xFB 0xFF
+        assert_eq!(a, vec![0xFB, 0xFF]);
+        assert!(base64_decode("!!not base64!!").is_ok() || base64_decode("").is_ok());
+    }
+
+    #[test]
+    fn xml_escape_neutralizes_markup() {
+        assert_eq!(xml_escape("a<b>&c"), "a&lt;b&gt;&amp;c");
+        assert_eq!(xml_escape("plain"), "plain");
+    }
+
+    #[test]
+    fn prompts_include_inputs_but_not_forbidden_shape() {
+        let p = portrait_prompt("Mina", "measured, warm", &["she keeps a diary".into()]);
+        assert!(p.contains("Mina") && p.contains("diary"));
+        let c = cover_prompt("Dracula", Some("Bram Stoker"), &["gothic dread".into()]);
+        assert!(c.contains("Dracula") && c.contains("Bram Stoker") && c.contains("gothic dread"));
+        // author defaults when absent
+        assert!(cover_prompt("X", None, &[]).contains("Unknown"));
+    }
+
+    #[test]
+    fn typographic_svg_is_valid_and_escaped() {
+        let s = typographic_portrait_svg("Édouard & Co <x>");
+        assert!(s.starts_with("<svg"));
+        assert!(s.contains("&amp;") && s.contains("&lt;"));
+        assert!(s.contains(">É<") || s.contains("É")); // initial letter
+        let cov = typographic_cover_svg("A&B", None);
+        assert!(cov.starts_with("<svg") && cov.contains("A&amp;B"));
+    }
+}

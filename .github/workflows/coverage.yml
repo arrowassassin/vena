@@ -1,0 +1,45 @@
+name: coverage
+
+# Enforces a real line-coverage floor on every PR and every push to main.
+# The suite is genuine (real HTTP round-trips against loopback stubs, real
+# EPUB/CBZ parsing, the full AppApi command surface) — this gate keeps it that way.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: coverage-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  llvm-cov:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: llvm-tools-preview
+      - uses: swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@cargo-llvm-cov
+
+      # We measure with --no-default-features: the only source that needs the
+      # C/C++ embedded runtimes (llama.cpp / stable-diffusion.cpp) is
+      # local_llm.rs / local_paint.rs, which are FFI to multi-GB GPU models and
+      # cannot run in headless CI — they're excluded from the denominator below.
+      - name: Coverage (fail under 85% lines)
+        run: |
+          cargo llvm-cov --no-default-features --workspace \
+            --ignore-filename-regex '(bin/|src/main\.rs|local_llm\.rs|local_paint\.rs)' \
+            --fail-under-lines 85 \
+            --lcov --output-path lcov.info \
+            --summary-only
+
+      - name: Upload lcov artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lcov
+          path: lcov.info

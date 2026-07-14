@@ -24,3 +24,4 @@ tempfile = "3"
 
 [dev-dependencies]
 tokio = { workspace = true }
+tiny_http = "0.12"

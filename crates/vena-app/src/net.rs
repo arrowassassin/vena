@@ -564,4 +564,79 @@ mod tests {
         assert!(super::ao3_epub_url("https://archiveofourown.org/works/12345").is_ok());
         assert!(super::ao3_epub_url("https://archiveofourown.org/users/foo").is_err());
     }
+
+    #[test]
+    fn userinfo_authority_cannot_bypass_allowlist() {
+        // The real host is evil.com; the allowlisted name is only in userinfo.
+        assert!(super::assert_allowed("https://huggingface.co:x@evil.com/f", &[]).is_err());
+        assert!(super::assert_allowed("https://gutenberg.org@evil.com/x", &[]).is_err());
+    }
+
+    #[test]
+    fn loopback_and_hf_cdn_are_allowed() {
+        assert!(super::assert_allowed("http://127.0.0.1:11434/v1", &[]).is_ok());
+        assert!(super::assert_allowed("http://localhost:5000/x", &[]).is_ok());
+        // HF's LFS CDN is a subdomain of an allowed suffix
+        assert!(super::assert_allowed("https://cdn-lfs.huggingface.co/blob", &[]).is_ok());
+        assert!(super::assert_allowed("https://cas-bridge.xethub.hf.co/x", &[]).is_ok());
+    }
+
+    #[test]
+    fn host_in_fixed_matches_suffix_not_substring() {
+        assert!(super::host_in_fixed("huggingface.co"));
+        assert!(super::host_in_fixed("sub.gutenberg.org"));
+        assert!(!super::host_in_fixed("huggingface.co.evil.com"));
+        assert!(!super::host_in_fixed("evil.com"));
+    }
+
+    #[test]
+    fn ao3_epub_url_builds_download_path() {
+        let url = super::ao3_epub_url("https://archiveofourown.org/works/999").unwrap();
+        assert!(url.contains("/downloads/999/work.epub"));
+        assert!(url.contains("archiveofourown.org"));
+    }
+
+    #[test]
+    fn hf_repo_file_maps_qwen_tiers() {
+        assert_eq!(
+            super::hf_repo_file("Qwen3-4B-Instruct-Q4_K_M").unwrap().0,
+            "bartowski/Qwen_Qwen3-4B-Instruct-2507-GGUF"
+        );
+        assert!(super::hf_repo_file("Qwen3-8B-Instruct-Q4_K_M").is_some());
+        assert!(super::hf_repo_file("Qwen3-14B-Instruct-Q4_K_M").is_some());
+        assert!(super::hf_repo_file("unknown-model").is_none());
+    }
+
+    #[test]
+    fn parse_opds_extracts_entries_and_acquisition() {
+        let xml = r#"<feed>
+          <entry><title>Moby-Dick</title><id>urn:1</id>
+            <author><name>Herman Melville</name></author>
+            <link rel="http://opds-spec.org/acquisition" href="https://x.test/a.epub"/>
+          </entry>
+          <entry><title>No Author Book</title><id>urn:2</id>
+            <link rel="http://opds-spec.org/acquisition/open-access" href="https://x.test/b.epub"/>
+          </entry>
+          <entry><title></title><id>urn:3</id></entry>
+        </feed>"#;
+        let out = super::parse_opds(xml);
+        assert_eq!(out.len(), 2, "empty-title entry dropped: {out:?}");
+        assert_eq!(out[0].1, "Moby-Dick");
+        assert_eq!(out[0].2.as_deref(), Some("Herman Melville"));
+        assert_eq!(out[0].3.as_deref(), Some("https://x.test/a.epub"));
+        assert!(out[1].2.is_none());
+    }
+
+    #[test]
+    fn hf_pick_gguf_falls_back_to_prefer_when_api_unreachable() {
+        // No network in unit tests → the API call fails → returns `prefer`.
+        let picked = super::hf_pick_gguf("nonexistent/repo", "model-Q8_0.gguf");
+        assert_eq!(picked, "model-Q8_0.gguf");
+    }
+
+    #[test]
+    fn urlencode_escapes_reserved() {
+        assert_eq!(super::urlencode("a b&c"), "a+b%26c");
+        assert_eq!(super::urlencode("plain"), "plain");
+    }
 }

@@ -202,7 +202,11 @@ impl AppApi {
         path: &str,
         mut on_progress: impl FnMut(u32, &str),
     ) -> Result<BookMeta> {
-        let book = vena_forge::import::import_path(Path::new(path))
+        // Pass our assets dir EXPLICITLY (not via the process-global
+        // VENA_ASSET_DIR) so comic-page extraction is correct even if another
+        // AppApi exists in-process (tests, future multi-profile).
+        let assets = self.assets_dir().ok();
+        let book = vena_forge::import::import_path_in(Path::new(path), assets.as_deref())
             .map_err(|e| VenaError::InvalidPackage(e.to_string()))?;
         on_progress(20, "parse");
 
