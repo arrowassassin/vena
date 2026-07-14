@@ -1,0 +1,18 @@
+[package]
+name = "vena-eval"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Phase-1 eval harness: TimeChara-style point-in-time interviews + the §9 GO/PIVOT/KILL verdict. Kept forever as the regression suite and the in-app Test-the-Gate."
+
+[[bin]]
+name = "vena-eval"
+path = "src/main.rs"
+
+[dependencies]
+vena-core = { path = "../vena-core" }
+vena-forge = { path = "../vena-forge" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+clap = { workspace = true }

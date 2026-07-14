@@ -1,0 +1,45 @@
+name: codeql
+
+# Static security analysis on Rust and the UI JavaScript. Runs on PRs, pushes
+# to main, and weekly so new advisories surface against unchanged code.
+#
+# NOTE: results upload requires "Code scanning" to be enabled once in the repo
+# (Settings → Security → Code security → Code scanning → set up). Until then the
+# analysis still runs but can't publish alerts.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    - cron: "0 6 * * 1" # Mondays 06:00 UTC
+  workflow_dispatch:
+
+jobs:
+  analyze:
+    runs-on: ubuntu-latest
+    permissions:
+      security-events: write
+      actions: read
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        # CodeQL's Rust and JS extractors both do source-based analysis —
+        # build-mode: none (a manual cargo build is neither needed nor supported
+        # for Rust).
+        language: [rust, javascript-typescript]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v3
+        with:
+          languages: ${{ matrix.language }}
+          build-mode: none
+
+      - name: Analyze
+        uses: github/codeql-action/analyze@v3
+        with:
+          category: "/language:${{ matrix.language }}"

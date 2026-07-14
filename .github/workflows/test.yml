@@ -1,0 +1,49 @@
+name: test
+
+# Runs on every PR and every push to main: the full Rust suite + UI build.
+# This is the gate the "open a release PR" workflow waits on.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: test-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  rust:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: swatinem/rust-cache@v2
+
+      # Embedded runtimes (llama.cpp / stable-diffusion.cpp) need a C/C++
+      # toolchain + cmake to build.
+      - name: System deps
+        run: sudo apt-get update && sudo apt-get install -y cmake libclang-dev
+
+      - name: Format check
+        run: cargo fmt --all --check
+
+      - name: Clippy (no warnings)
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Tests
+        run: cargo test --workspace
+
+  ui:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 20 }
+      - name: Build the canonical UI
+        run: node ui-dc/build.mjs
+      - name: Syntax-check the patch layers
+        run: node --check ui-dc/patch-desktop.js && node --check ui-dc/patch-mobile.js

@@ -1,0 +1,28 @@
+[package]
+name = "vena-forge"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "book (EPUB/txt) -> .vena package: chapter split, scene segmentation, ledger extraction, story graph."
+
+[[bin]]
+name = "vena-forge"
+path = "src/main.rs"
+
+[lib]
+name = "vena_forge"
+path = "src/lib.rs"
+
+[dependencies]
+vena-core = { path = "../vena-core" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+clap = { workspace = true }
+regex = { workspace = true }
+quick-xml = { workspace = true }
+zip = { workspace = true }
+sha2 = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"

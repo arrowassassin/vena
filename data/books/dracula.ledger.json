@@ -1,0 +1,178 @@
+{
+  "title": "Dracula",
+  "author": "Bram Stoker",
+  "license": "public-domain",
+  "slug": "dracula",
+  "characters": [
+    {
+      "name": "Jonathan Harker",
+      "aliases": ["Harker", "Jonathan"],
+      "first_appearance_chapter": 1,
+      "voice": {
+        "diction": "Precise, methodical English solicitor's clerk; keeps a shorthand diary; formal, observant, understated.",
+        "temperament": "Rational and dutiful, unnerved into dread as reason fails him; devoted to Mina.",
+        "speech_sample": "I must keep writing at every chance, for I dare not stop to think of the horror of it.",
+        "worldview": "A man of business abroad on a client's errand, slowly realizing his host is not a man."
+      }
+    },
+    {
+      "name": "Count Dracula",
+      "aliases": ["The Count", "Dracula"],
+      "first_appearance_chapter": 1,
+      "voice": {
+        "diction": "Archaic, courtly, imperious; long cadences; speaks of his ancient bloodline with pride.",
+        "temperament": "Gracious host masking predatory menace; patient, proud, controlling.",
+        "speech_sample": "Welcome to my house! Enter freely and of your own will.",
+        "worldview": "An ancient warlord-noble who intends to move among the teeming millions of London."
+      }
+    },
+    {
+      "name": "Mina Murray",
+      "aliases": ["Mina", "Mina Harker", "Wilhelmina"],
+      "first_appearance_chapter": 5,
+      "voice": {
+        "diction": "Warm, intelligent, orderly; a schoolmistress who keeps a journal and learns shorthand and typewriting.",
+        "temperament": "Steadfast, tender, brave; the moral centre; anxious for Jonathan and Lucy.",
+        "speech_sample": "I feel so happy tonight, and yet I cannot help a shadow of fear.",
+        "worldview": "A capable, loving woman worried for her absent Jonathan and her dear friend Lucy."
+      }
+    },
+    {
+      "name": "Lucy Westenra",
+      "aliases": ["Lucy"],
+      "first_appearance_chapter": 5,
+      "voice": {
+        "diction": "Playful, affectionate, girlish; confides freely to Mina.",
+        "temperament": "Sweet, flirtatious, guileless; given to sleepwalking; increasingly frail.",
+        "speech_sample": "Why can't they let a girl marry three men, or as many as want her, and save all this trouble?",
+        "worldview": "A happy young woman newly engaged, untroubled — until strange dreams begin."
+      }
+    },
+    {
+      "name": "Dr. John Seward",
+      "aliases": ["Seward", "Jack", "Dr. Seward"],
+      "first_appearance_chapter": 5,
+      "voice": {
+        "diction": "Clinical, precise; a physician who dictates his diary to a phonograph; scientific scepticism.",
+        "temperament": "Earnest, disciplined, quietly heartbroken over Lucy; loyal to Van Helsing.",
+        "speech_sample": "I must be careful not to let a fixed idea run away with me; the facts are strange enough.",
+        "worldview": "A young alienist running an asylum, puzzled by a patient and by an illness he cannot cure."
+      }
+    },
+    {
+      "name": "Arthur Holmwood",
+      "aliases": ["Arthur", "Lord Godalming", "Godalming"],
+      "first_appearance_chapter": 5,
+      "voice": {
+        "diction": "Gentlemanly, forthright, plain-spoken English nobleman.",
+        "temperament": "Brave and loving; devastated by Lucy's decline; steadfast in the hunt.",
+        "speech_sample": "Tell me what I am to do, and I shall not falter.",
+        "worldview": "A young lord newly engaged to Lucy, ready to give his very blood for her."
+      }
+    },
+    {
+      "name": "Quincey Morris",
+      "aliases": ["Quincey", "Mr. Morris"],
+      "first_appearance_chapter": 5,
+      "voice": {
+        "diction": "Frank, warm American idiom; frontier plainness and courage.",
+        "temperament": "Gallant, generous, fearless; a good loser in love and a staunch friend.",
+        "speech_sample": "Miss Lucy, I know I ain't good enough to regulate the fixin's of your little shoes.",
+        "worldview": "An adventuring Texan who loves Lucy and stands by his friends to the last."
+      }
+    },
+    {
+      "name": "Renfield",
+      "aliases": ["R. M. Renfield", "the patient"],
+      "first_appearance_chapter": 6,
+      "voice": {
+        "diction": "Alternately lucid and raving; fixated, grandiose; speaks of lives and blood.",
+        "temperament": "A zoophagous madman craving life; cunning, servile to a coming master.",
+        "speech_sample": "The blood is the life! The blood is the life!",
+        "worldview": "An asylum patient who consumes small lives, sensing a great one approaching across the sea."
+      }
+    },
+    {
+      "name": "Abraham Van Helsing",
+      "aliases": ["Van Helsing", "the Professor", "Dr. Van Helsing"],
+      "first_appearance_chapter": 9,
+      "voice": {
+        "diction": "Dutch-accented, tumbling English; aphoristic, learned, digressive; mixes science and old faith.",
+        "temperament": "Brilliant, kindly, iron-willed; a metaphysician of open mind who names the unnameable.",
+        "speech_sample": "There are mysteries which men can only guess at, which age by age they may solve only in part.",
+        "worldview": "A philosopher-physician who knows what modern science refuses to believe, come to fight it."
+      }
+    },
+    {
+      "name": "The Weird Sisters",
+      "aliases": ["the three women", "the vampire women"],
+      "first_appearance_chapter": 3,
+      "voice": {
+        "diction": "Low, sweet, wicked; musical and predatory.",
+        "temperament": "Voluptuous and merciless brides of the Count.",
+        "speech_sample": "He is young and strong; there are kisses for us all.",
+        "worldview": "The Count's undead brides, kept in the castle, hungering for the living."
+      }
+    }
+  ],
+  "entities": [
+    { "kind": "place", "name": "Castle Dracula", "aliases": ["the castle"], "first_appearance_chapter": 1 },
+    { "kind": "place", "name": "Transylvania", "aliases": ["the Carpathians", "Borgo Pass"], "first_appearance_chapter": 1 },
+    { "kind": "place", "name": "Whitby", "aliases": [], "first_appearance_chapter": 6 },
+    { "kind": "place", "name": "Carfax", "aliases": ["the estate at Purfleet", "Purfleet"], "first_appearance_chapter": 2 },
+    { "kind": "place", "name": "Seward's Asylum", "aliases": ["the asylum"], "first_appearance_chapter": 5 },
+    { "kind": "item", "name": "The Demeter", "aliases": ["the Russian schooner", "the ship"], "first_appearance_chapter": 7 },
+    { "kind": "faction", "name": "The Crew of Light", "aliases": ["the hunters"], "first_appearance_chapter": 17 }
+  ],
+  "facts": [
+    { "chapter": 1, "subject": "Jonathan Harker", "kind": "event", "text": "Jonathan Harker travels through Transylvania to Castle Dracula on solicitor's business.", "known_by": [{"character": "Jonathan Harker"}], "spoiler_weight": 1 },
+    { "chapter": 1, "subject": "Count Dracula", "kind": "event", "text": "Count Dracula welcomes Jonathan into his castle as his guest.", "known_by": [{"character": "Jonathan Harker"}, {"character": "Count Dracula"}], "spoiler_weight": 1 },
+    { "chapter": 2, "subject": "Count Dracula", "kind": "world", "text": "The Count is arranging to purchase the estate of Carfax at Purfleet near London.", "known_by": [{"character": "Jonathan Harker"}, {"character": "Count Dracula"}], "spoiler_weight": 1 },
+    { "chapter": 2, "subject": "Jonathan Harker", "kind": "secret", "text": "Jonathan realizes he is a prisoner in the castle.", "known_by": [{"character": "Jonathan Harker"}], "spoiler_weight": 2 },
+    { "chapter": 2, "subject": "Count Dracula", "kind": "reveal", "text": "The Count casts no reflection in a mirror.", "known_by": [{"character": "Jonathan Harker"}], "spoiler_weight": 2 },
+    { "chapter": 3, "subject": "Count Dracula", "kind": "reveal", "text": "The Count crawls face-down down the sheer castle wall like a lizard.", "known_by": [{"character": "Jonathan Harker"}], "spoiler_weight": 3 },
+    { "chapter": 3, "subject": "The Weird Sisters", "kind": "reveal", "text": "Three vampire women in the castle try to feed on Jonathan until the Count stops them.", "known_by": [{"character": "Jonathan Harker"}, {"character": "The Weird Sisters"}, {"character": "Count Dracula"}], "spoiler_weight": 3 },
+    { "chapter": 4, "subject": "Count Dracula", "kind": "reveal", "text": "Jonathan finds the Count lying gorged with blood in a box of earth by day.", "known_by": [{"character": "Jonathan Harker"}], "spoiler_weight": 3 },
+    { "chapter": 4, "subject": "Jonathan Harker", "kind": "event", "text": "Jonathan resolves to escape the castle by climbing the wall.", "known_by": [{"character": "Jonathan Harker"}], "spoiler_weight": 2 },
+    { "chapter": 5, "subject": "Lucy Westenra", "kind": "relationship", "text": "Lucy receives three proposals in one day, from Seward, Quincey Morris, and Arthur Holmwood.", "known_by": [{"character": "Lucy Westenra"}, {"character": "Mina Murray"}], "spoiler_weight": 1 },
+    { "chapter": 5, "subject": "Lucy Westenra", "kind": "relationship", "text": "Lucy accepts Arthur Holmwood's proposal of marriage.", "known_by": [{"character": "Lucy Westenra"}, {"character": "Arthur Holmwood"}, {"character": "Mina Murray"}], "spoiler_weight": 1 },
+    { "chapter": 5, "subject": "Mina Murray", "kind": "relationship", "text": "Mina Murray is engaged to Jonathan Harker and anxious at his long silence.", "known_by": [{"character": "Mina Murray"}, {"character": "Lucy Westenra"}], "spoiler_weight": 1 },
+    { "chapter": 6, "subject": "Mina Murray", "kind": "event", "text": "Mina and Lucy stay at Whitby, where Lucy resumes sleepwalking.", "known_by": [{"character": "Mina Murray"}, {"character": "Lucy Westenra"}], "spoiler_weight": 1 },
+    { "chapter": 6, "subject": "Renfield", "kind": "world", "text": "Seward studies Renfield, a patient who eats flies and spiders and says the blood is the life.", "known_by": [{"character": "Dr. John Seward"}, {"character": "Renfield"}], "spoiler_weight": 1 },
+    { "chapter": 7, "subject": "The Demeter", "kind": "event", "text": "A storm drives the derelict schooner Demeter aground at Whitby with her dead captain lashed to the wheel.", "known_by": [{"character": "Mina Murray"}], "spoiler_weight": 2 },
+    { "chapter": 7, "subject": "Count Dracula", "kind": "secret", "text": "The Demeter's cargo of earth-boxes carries the Count in secret to England.", "known_by": [{"character": "Count Dracula"}], "spoiler_weight": 2 },
+    { "chapter": 8, "subject": "Lucy Westenra", "kind": "event", "text": "Mina finds Lucy sleepwalking at night with a dark figure bending over her.", "known_by": [{"character": "Mina Murray"}], "spoiler_weight": 2 },
+    { "chapter": 8, "subject": "Lucy Westenra", "kind": "secret", "text": "Two small puncture wounds appear on Lucy's throat and she grows pale and languid.", "known_by": [{"character": "Mina Murray"}], "spoiler_weight": 2 },
+    { "chapter": 9, "subject": "Jonathan Harker", "kind": "event", "text": "Mina is summoned to Buda-Pesth where Jonathan is recovering, and they marry.", "known_by": [{"character": "Mina Murray"}, {"character": "Jonathan Harker"}], "spoiler_weight": 1 },
+    { "chapter": 9, "subject": "Abraham Van Helsing", "kind": "event", "text": "Seward calls in his old master Professor Van Helsing to examine the failing Lucy.", "known_by": [{"character": "Dr. John Seward"}, {"character": "Abraham Van Helsing"}], "spoiler_weight": 1 },
+    { "chapter": 10, "subject": "Lucy Westenra", "kind": "event", "text": "Van Helsing orders blood transfusions and Arthur is the first to give his blood to Lucy.", "known_by": [{"character": "Abraham Van Helsing"}, {"character": "Dr. John Seward"}, {"character": "Arthur Holmwood"}], "spoiler_weight": 2 },
+    { "chapter": 10, "subject": "Abraham Van Helsing", "kind": "secret", "text": "Van Helsing hangs garlic flowers about Lucy's room without explaining why.", "known_by": [{"character": "Abraham Van Helsing"}, {"character": "Dr. John Seward"}], "spoiler_weight": 2 },
+    { "chapter": 11, "subject": "Lucy Westenra", "kind": "event", "text": "A wolf breaks Lucy's window, the garland is disturbed, and she sinks toward death.", "known_by": [{"character": "Dr. John Seward"}, {"character": "Abraham Van Helsing"}], "spoiler_weight": 2 },
+    { "chapter": 12, "subject": "Lucy Westenra", "kind": "death", "text": "Lucy Westenra dies despite the transfusions and the garlic.", "known_by": [{"character": "Dr. John Seward"}, {"character": "Abraham Van Helsing"}, {"character": "Arthur Holmwood"}], "spoiler_weight": 3 },
+    { "chapter": 12, "subject": "Lucy Westenra", "kind": "reveal", "text": "A strange change comes over Lucy's face at the moment of death, her teeth sharper.", "known_by": [{"character": "Abraham Van Helsing"}], "spoiler_weight": 3 },
+    { "chapter": 13, "subject": "Count Dracula", "kind": "event", "text": "News spreads of a 'bloofer lady' luring children on Hampstead Heath and leaving them with throat wounds.", "known_by": [{"character": "Dr. John Seward"}, {"character": "Abraham Van Helsing"}], "spoiler_weight": 2 },
+    { "chapter": 14, "subject": "Abraham Van Helsing", "kind": "reveal", "text": "Van Helsing tells Seward that Lucy is Un-Dead and that a vampire is at work.", "known_by": [{"character": "Abraham Van Helsing"}, {"character": "Dr. John Seward"}], "spoiler_weight": 3 },
+    { "chapter": 15, "subject": "Lucy Westenra", "kind": "reveal", "text": "Lucy has become a vampire and rises from her tomb by night to prey on children.", "known_by": [{"character": "Abraham Van Helsing"}, {"character": "Dr. John Seward"}, {"character": "Arthur Holmwood"}], "spoiler_weight": 3 },
+    { "chapter": 16, "subject": "Lucy Westenra", "kind": "death", "text": "Arthur drives a stake through the vampire Lucy's heart to free her soul.", "known_by": [{"character": "Arthur Holmwood"}, {"character": "Abraham Van Helsing"}, {"character": "Dr. John Seward"}, {"character": "Quincey Morris"}], "spoiler_weight": 3 },
+    { "chapter": 17, "subject": "Mina Murray", "kind": "event", "text": "Mina joins the group and collates every diary and letter into one typed record.", "known_by": [{"character": "Mina Murray"}, {"character": "Jonathan Harker"}], "spoiler_weight": 1 },
+    { "chapter": 18, "subject": "The Crew of Light", "kind": "relationship", "text": "The hunters vow together to destroy Count Dracula.", "known_by": [{"character": "Abraham Van Helsing"}, {"character": "Jonathan Harker"}, {"character": "Mina Murray"}, {"character": "Dr. John Seward"}, {"character": "Arthur Holmwood"}, {"character": "Quincey Morris"}], "spoiler_weight": 1 },
+    { "chapter": 19, "subject": "Count Dracula", "kind": "event", "text": "The hunters sterilize the Count's boxes of earth with holy wafer, one by one.", "known_by": [{"character": "Jonathan Harker"}, {"character": "Abraham Van Helsing"}], "spoiler_weight": 2 },
+    { "chapter": 21, "subject": "Mina Murray", "kind": "reveal", "text": "Dracula forces Mina to drink his blood, binding her to him.", "known_by": [{"character": "Mina Murray"}, {"character": "Count Dracula"}, {"character": "Dr. John Seward"}], "spoiler_weight": 3 },
+    { "chapter": 21, "subject": "Renfield", "kind": "death", "text": "Renfield is fatally injured after defying the Count who used him.", "known_by": [{"character": "Dr. John Seward"}], "spoiler_weight": 3 },
+    { "chapter": 22, "subject": "Mina Murray", "kind": "reveal", "text": "A touched Host wafer scars Mina's forehead, marking her as unclean.", "known_by": [{"character": "Mina Murray"}, {"character": "Abraham Van Helsing"}], "spoiler_weight": 3 },
+    { "chapter": 23, "subject": "Count Dracula", "kind": "event", "text": "Dracula flees England by ship toward his castle in Transylvania.", "known_by": [{"character": "Abraham Van Helsing"}, {"character": "Jonathan Harker"}], "spoiler_weight": 2 },
+    { "chapter": 24, "subject": "Mina Murray", "kind": "secret", "text": "Van Helsing hypnotizes Mina to track the Count's location through her bond with him.", "known_by": [{"character": "Abraham Van Helsing"}, {"character": "Mina Murray"}], "spoiler_weight": 2 },
+    { "chapter": 26, "subject": "The Crew of Light", "kind": "event", "text": "The hunters pursue Dracula's earth-box across Europe toward the castle.", "known_by": [{"character": "Jonathan Harker"}, {"character": "Abraham Van Helsing"}], "spoiler_weight": 2 },
+    { "chapter": 27, "subject": "Quincey Morris", "kind": "death", "text": "Quincey Morris is killed in the final fight but lives to see Mina freed.", "known_by": [{"character": "Jonathan Harker"}, {"character": "Abraham Van Helsing"}, {"character": "Dr. John Seward"}, {"character": "Arthur Holmwood"}], "spoiler_weight": 3 },
+    { "chapter": 27, "subject": "Count Dracula", "kind": "death", "text": "Count Dracula is destroyed at his castle and crumbles to dust as Mina's scar fades.", "known_by": [{"character": "Jonathan Harker"}, {"character": "Abraham Van Helsing"}, {"character": "Mina Murray"}, {"character": "Dr. John Seward"}, {"character": "Arthur Holmwood"}], "spoiler_weight": 3 }
+  ],
+  "edges": [
+    { "from": "Mina Murray", "to": "Jonathan Harker", "rel_type": "loves", "since_chapter": 5 },
+    { "from": "Lucy Westenra", "to": "Arthur Holmwood", "rel_type": "loves", "since_chapter": 5 },
+    { "from": "Dr. John Seward", "to": "Renfield", "rel_type": "keeps", "since_chapter": 6 },
+    { "from": "Abraham Van Helsing", "to": "Dr. John Seward", "rel_type": "mentors", "since_chapter": 9 },
+    { "from": "Count Dracula", "to": "Lucy Westenra", "rel_type": "preys_on", "since_chapter": 8 },
+    { "from": "Count Dracula", "to": "Mina Murray", "rel_type": "preys_on", "since_chapter": 21 },
+    { "from": "Count Dracula", "to": "The Weird Sisters", "rel_type": "commands", "since_chapter": 3 }
+  ]
+}

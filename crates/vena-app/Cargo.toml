@@ -1,0 +1,66 @@
+[package]
+name = "vena-app"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Vena Tauri 2 shell: typed IPC commands, events, state. The command LOGIC lives in the lib (no Tauri dep, fully testable); the `vena` bin is the thin Tauri wrapper."
+
+[lib]
+name = "vena_app"
+path = "src/lib.rs"
+
+# The Tauri desktop/mobile binary. Skipped by a plain `cargo build`/`test` (needs
+# webkit2gtk etc.); built on a dev machine with `--features tauri`.
+[[bin]]
+name = "vena"
+path = "src/bin/vena.rs"
+required-features = ["tauri"]
+
+# Dev bridge: the SAME AppApi surface over localhost HTTP+SSE, so the React UI in a
+# plain browser drives the REAL engine (no mocks). Not shipped; dev/CI only.
+[[bin]]
+name = "vena-devserver"
+path = "src/bin/devserver.rs"
+
+[features]
+default = ["embedded-llm", "embedded-paint"]
+# In-process llama.cpp: downloaded GGUF tiers speak with NO external server.
+# Off-switch kept for constrained build environments (cmake + C++ required).
+embedded-llm = ["dep:llama-cpp-2"]
+# In-process stable-diffusion.cpp: downloaded paint tiers render with NO CLI.
+embedded-paint = ["dep:diffusion-rs"]
+tauri = ["dep:tauri", "dep:tauri-plugin-dialog", "dep:tauri-plugin-notification", "dep:keyring", "dep:tauri-build"]
+
+[dependencies]
+vena-core = { path = "../vena-core" }
+vena-forge = { path = "../vena-forge" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+reqwest = { workspace = true }
+regex = { workspace = true }
+tracing = { workspace = true }
+tiny_http = "0.12"
+sha2 = { workspace = true }
+
+llama-cpp-2 = { version = "0.1", optional = true }
+diffusion-rs = { version = "0.1", optional = true }
+
+# Tauri-only (optional; enabled by the `tauri` feature).
+tauri = { version = "2", features = [], optional = true }
+tauri-plugin-dialog = { version = "2", optional = true }
+tauri-plugin-notification = { version = "2", optional = true }
+keyring = { version = "3", optional = true }
+encoding_rs = "0.8.35"
+
+# Apple GPUs: offload to Metal (no effect elsewhere).
+[target.'cfg(target_os = "macos")'.dependencies]
+llama-cpp-2 = { version = "0.1", optional = true, features = ["metal"] }
+diffusion-rs = { version = "0.1", optional = true, features = ["metal"] }
+
+[build-dependencies]
+tauri-build = { version = "2", optional = true }
+
+[dev-dependencies]
+tempfile = "3"
+zip = { workspace = true }
