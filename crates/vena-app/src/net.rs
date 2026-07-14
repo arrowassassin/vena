@@ -9,7 +9,20 @@
 
 use serde::Deserialize;
 use std::io::Write;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::Mutex;
+
+type PathSet = Mutex<std::collections::HashSet<PathBuf>>;
+/// (gutenberg_id, title, author, epub_url, cover_url) — a Gutendex search hit.
+type GutendexHit = (
+    String,
+    String,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+);
+/// (entry_id, title, author, acquisition_url) — an OPDS catalog entry.
+type OpdsEntry = (String, String, Option<String>, Option<String>);
 use vena_core::{Result, VenaError};
 
 /// One shared client for the whole process — reuses the connection pool / keep-alive
@@ -21,6 +34,7 @@ fn client() -> &'static reqwest::blocking::Client {
         reqwest::blocking::Client::builder()
             .user_agent("vena/0.1 (+https://github.com/arrowassassin/vena)")
             .timeout(std::time::Duration::from_secs(60))
+            .redirect(guarded_redirect())
             .build()
             .expect("http client")
     })
@@ -39,6 +53,7 @@ fn dl_client() -> &'static reqwest::blocking::Client {
             .connect_timeout(std::time::Duration::from_secs(30))
             .timeout(None)
             .tcp_keepalive(std::time::Duration::from_secs(30))
+            .redirect(guarded_redirect())
             .build()
             .expect("dl client")
     })
@@ -66,10 +81,9 @@ pub fn probe_openai_base(base: &str) -> bool {
 /// Cancellation registry for in-flight downloads, keyed by destination path.
 /// `cancel_download(dest)` flags it; the streaming loop notices between chunks
 /// and stops, KEEPING the .part file so the next attempt resumes.
-fn cancels() -> &'static std::sync::Mutex<std::collections::HashSet<std::path::PathBuf>> {
-    static C: std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<std::path::PathBuf>>> =
-        std::sync::OnceLock::new();
-    C.get_or_init(|| std::sync::Mutex::new(std::collections::HashSet::new()))
+fn cancels() -> &'static PathSet {
+    static C: std::sync::OnceLock<PathSet> = std::sync::OnceLock::new();
+    C.get_or_init(|| Mutex::new(std::collections::HashSet::new()))
 }
 
 pub fn cancel_download(dest: &Path) {
@@ -83,10 +97,9 @@ fn take_cancel(dest: &Path) -> bool {
 /// In-flight registry: a destination can only be downloaded by ONE worker at a
 /// time. A page refresh forgets the UI's downloading state — clicking RESUME
 /// while the first worker is still streaming/verifying must not race it.
-fn inflight() -> &'static std::sync::Mutex<std::collections::HashSet<std::path::PathBuf>> {
-    static C: std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<std::path::PathBuf>>> =
-        std::sync::OnceLock::new();
-    C.get_or_init(|| std::sync::Mutex::new(std::collections::HashSet::new()))
+fn inflight() -> &'static PathSet {
+    static C: std::sync::OnceLock<PathSet> = std::sync::OnceLock::new();
+    C.get_or_init(|| Mutex::new(std::collections::HashSet::new()))
 }
 
 struct InflightGuard(std::path::PathBuf);
@@ -139,11 +152,21 @@ pub fn download_file_verified(
         .send()
         .map_err(|e| VenaError::Other(format!("download failed: {e}")))?;
     let status = resp.status();
-    // 416 Range Not Satisfiable with a non-empty .part means every byte is
-    // already on disk (an interrupted run that finished streaming but never
-    // verified). Skip straight to the integrity gate instead of failing.
+    // 416 Range Not Satisfiable with a non-empty .part means our bytes already
+    // reach or exceed the server's length. With an expected SHA we can trust
+    // the integrity gate below to accept or reject them. WITHOUT a SHA (EPUB
+    // downloads) a 416 could equally mean the .part is corrupt/oversized, so we
+    // must NOT rename it blind — discard and restart fresh.
     if status.as_u16() == 416 && already > 0 {
-        bytes_complete = true;
+        if expected_sha256.is_some() {
+            bytes_complete = true;
+        } else {
+            let _ = std::fs::remove_file(&part);
+            return Err(VenaError::Other(
+                "the partial download didn't match the source — restarting; tap download again"
+                    .into(),
+            ));
+        }
     }
     let resuming = status == reqwest::StatusCode::PARTIAL_CONTENT;
     if !bytes_complete {
@@ -185,7 +208,13 @@ pub fn download_file_verified(
             if total > 0 {
                 // bytes stop at 98 — 99 is the SHA-verify phase (hashing a
                 // multi-GB file takes real seconds; the UI shows VERIFYING)
-                on_progress(((downloaded * 100) / total).min(98) as u32);
+                on_progress(
+                    (downloaded
+                        .saturating_mul(100)
+                        .checked_div(total)
+                        .unwrap_or(0))
+                    .min(98) as u32,
+                );
             }
         }
         drop(file);
@@ -254,18 +283,35 @@ pub fn hf_download(
     on_progress: &mut dyn FnMut(u32),
 ) -> Result<()> {
     let pointer_url = format!("https://huggingface.co/{repo}/raw/main/{remote_file}");
-    let pointer = client()
+    let resp = client()
         .get(&pointer_url)
         .send()
-        .and_then(|r| r.text())
         .map_err(|e| VenaError::Other(format!("fetching LFS pointer: {e}")))?;
+    if !resp.status().is_success() {
+        return Err(VenaError::Other(format!(
+            "Hugging Face returned {} for {remote_file} — the model may have moved or be rate-limited; try again",
+            resp.status()
+        )));
+    }
+    let pointer = resp
+        .text()
+        .map_err(|e| VenaError::Other(format!("reading LFS pointer: {e}")))?;
+    // GGUF weights are ALWAYS Git-LFS — a missing digest means we fetched an
+    // error page / HTML, not the pointer. Refuse rather than install a
+    // multi-GB blob unverified (a corrupt or wrong model marked "ready").
     let expected = pointer
         .lines()
         .find_map(|l| l.strip_prefix("oid sha256:"))
         .map(str::trim)
-        .map(str::to_string);
+        .ok_or_else(|| {
+            VenaError::Other(
+                "couldn't read the model's integrity digest from Hugging Face — refusing to \
+                 install an unverified download; try again in a moment"
+                    .into(),
+            )
+        })?;
     let url = format!("https://huggingface.co/{repo}/resolve/main/{remote_file}?download=true");
-    download_file_verified(&url, dest, expected.as_deref(), &[], on_progress)
+    download_file_verified(&url, dest, Some(expected), &[], on_progress)
 }
 
 /// Download a tier's GGUF from Hugging Face (§11.4 plumbing). The in-repo
@@ -317,19 +363,7 @@ struct GutendexAuthor {
 }
 
 /// Project Gutenberg via the Gutendex JSON API (§F4b). `page` = real pagination.
-pub fn gutendex_search(
-    query: &str,
-    topic: Option<&str>,
-    page: u32,
-) -> Result<
-    Vec<(
-        String,
-        String,
-        Option<String>,
-        Option<String>,
-        Option<String>,
-    )>,
-> {
+pub fn gutendex_search(query: &str, topic: Option<&str>, page: u32) -> Result<Vec<GutendexHit>> {
     let mut url = format!(
         "https://gutendex.com/books?search={}&page={}",
         urlencode(query),
@@ -373,10 +407,7 @@ pub fn gutendex_search(
 
 /// Fetch an OPDS feed. `user_hosts` = hosts of the user's registered catalogs; a
 /// feed on any other non-fixed host is refused (policy enforcement).
-pub fn opds_fetch(
-    url: &str,
-    user_hosts: &[String],
-) -> Result<Vec<(String, String, Option<String>, Option<String>)>> {
+pub fn opds_fetch(url: &str, user_hosts: &[String]) -> Result<Vec<OpdsEntry>> {
     assert_allowed(url, user_hosts)?;
     let body = client()
         .get(url)
@@ -458,41 +489,58 @@ fn urlencode(s: &str) -> String {
         .collect()
 }
 
+/// Robust host extraction — one parser, shared with the remote/loopback
+/// classifier, immune to `userinfo@` authority spoofing.
 pub fn host_of(url: &str) -> String {
-    url.split("://")
-        .nth(1)
-        .unwrap_or(url)
-        .split('/')
-        .next()
-        .unwrap_or("")
-        .split(':')
-        .next()
-        .unwrap_or("")
-        .to_ascii_lowercase()
+    vena_core::util::url_host(url)
+}
+
+/// Fixed §11.2 sources: HF (+ its LFS CDN under hf.co) and the public-domain
+/// book sources. Redirect hops are validated against this same list.
+const ALLOWED_SUFFIXES: &[&str] = &[
+    "gutendex.com",
+    "gutenberg.org",
+    "standardebooks.org",
+    "archiveofourown.org",
+    "huggingface.co",
+    "hf.co",
+];
+
+fn host_in_fixed(host: &str) -> bool {
+    ALLOWED_SUFFIXES
+        .iter()
+        .any(|s| host == *s || host.ends_with(&format!(".{s}")))
 }
 
 /// Enforce the §11.2 network allowlist. Fixed sources + explicit user-configured
 /// hosts only; anything else is refused with `NetworkNotAllowed`.
 fn assert_allowed(url: &str, user_hosts: &[String]) -> Result<()> {
     let host = host_of(url);
-    const ALLOWED_SUFFIXES: &[&str] = &[
-        "gutendex.com",
-        "gutenberg.org",
-        "standardebooks.org",
-        "archiveofourown.org",
-        "huggingface.co",
-        "hf.co",
-    ];
-    let fixed = ALLOWED_SUFFIXES
-        .iter()
-        .any(|s| host == *s || host.ends_with(&format!(".{s}")));
     let user = user_hosts.iter().any(|h| h.eq_ignore_ascii_case(&host));
-    let local = matches!(host.as_str(), "localhost" | "127.0.0.1" | "::1" | "[::1]");
-    if fixed || user || local {
+    if host_in_fixed(&host) || user || vena_core::util::is_loopback_host(&host) {
         Ok(())
     } else {
         Err(VenaError::NetworkNotAllowed(host))
     }
+}
+
+/// Redirect policy for the shared clients: a redirect may only land on a fixed
+/// allowlisted host (or loopback). A 302 from an allowed origin to an arbitrary
+/// host would otherwise escape assert_allowed, which only saw the initial URL.
+/// User-OPDS hosts are not carried here, so a cross-host OPDS redirect fails
+/// closed — the safe default.
+fn guarded_redirect() -> reqwest::redirect::Policy {
+    reqwest::redirect::Policy::custom(|attempt| {
+        if attempt.previous().len() > 10 {
+            return attempt.error("too many redirects");
+        }
+        let host = vena_core::util::url_host(attempt.url().as_str());
+        if host_in_fixed(&host) || vena_core::util::is_loopback_host(&host) {
+            attempt.follow()
+        } else {
+            attempt.stop()
+        }
+    })
 }
 
 #[cfg(test)]

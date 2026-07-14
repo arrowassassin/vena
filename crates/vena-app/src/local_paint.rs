@@ -29,7 +29,7 @@ pub fn render(model: &Path, prompt: &str, w: u32, h: u32, out: &Path) -> Result<
         .width(w as i32)
         .height(h as i32)
         .steps(18)
-        .cfg_scale(7.0)
+        .cfg_scale(7.0_f32)
         .output(out.to_path_buf())
         .build()
         .map_err(|e| VenaError::Other(format!("paint config: {e}")))?;

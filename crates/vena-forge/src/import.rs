@@ -322,9 +322,7 @@ fn detect_profile(
     spine_docs: usize,
 ) -> (String, String) {
     let rtl_note = if rtl { " · RTL" } else { "" };
-    let profile = if pre_paginated {
-        "comic"
-    } else if chars_per_doc < 50 && image_count >= spine_docs {
+    let profile = if pre_paginated || (chars_per_doc < 50 && image_count >= spine_docs) {
         "comic"
     } else if image_count >= spine_docs && chars_per_doc > 50 {
         "illustrated-prose"
@@ -405,9 +403,9 @@ pub fn html_to_paragraphs(xhtml: &str) -> Vec<String> {
 }
 
 fn extract_html_title(xhtml: &str) -> Option<String> {
+    let tag = regex::Regex::new(r"(?s)<[^>]+>").unwrap();
     for t in ["h1", "h2", "title"] {
         if let Some(inner) = between(xhtml, &format!("<{t}"), &format!("</{t}>")) {
-            let tag = regex::Regex::new(r"(?s)<[^>]+>").unwrap();
             let cleaned = tag.replace_all(&inner, "").trim().to_string();
             if !cleaned.is_empty() && cleaned.len() < 80 {
                 return Some(html_unescape(&cleaned));

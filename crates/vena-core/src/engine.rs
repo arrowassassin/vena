@@ -99,6 +99,7 @@ impl Engine {
     /// the reader's current bookmark (Store::recent_messages /
     /// latest_chat_memory), so continuity never opens a side door past the
     /// gate. VERIFY still runs on every new reply.
+    #[allow(clippy::too_many_arguments)]
     pub fn companion_turn_with_history(
         &self,
         store: &Store,
@@ -109,22 +110,32 @@ impl Engine {
         history: &[(String, String)],
         on_stage: &mut dyn FnMut(&str),
     ) -> Result<TurnReport> {
-        // ---- STAGES 1 + 1.5 + 2 (shared with gate_and_assemble) ----
+        // ---- STAGE 1: GATE + ASSEMBLE (the only stage that needs the store) ----
         on_stage("gate");
+        let mut gated = gate_and_assemble(store, story_id, character_id, message)?;
+        apply_memory(&mut gated.system, memory);
+        // Stages 3–5 touch no store, so the caller can drop the profile lock
+        // before this (a local 7B turn is tens of seconds — see AppApi).
+        self.finish_turn(gated, message, history, on_stage)
+    }
+
+    /// Stages 2.5–5 (guard → generate → verify → repair) over an already-gated
+    /// turn. Deliberately takes NO store: the gate ran up front, so inference —
+    /// the slow part — happens with no lock held.
+    pub fn finish_turn(
+        &self,
+        gated: GatedTurn,
+        message: &str,
+        history: &[(String, String)],
+        on_stage: &mut dyn FnMut(&str),
+    ) -> Result<TurnReport> {
         let GatedTurn {
-            mut system,
+            system,
             visible,
             forbidden,
             unmet,
             character,
-        } = gate_and_assemble(store, story_id, character_id, message)?;
-        if let Some(m) = memory {
-            system.push_str(
-                "\n\n== WHAT YOU REMEMBER OF YOUR EARLIER TALKS WITH THE READER (your own private notes) ==\n",
-            );
-            system.push_str(m);
-            system.push('\n');
-        }
+        } = gated;
 
         // ---- Guard Character Fates: short-circuit before generation ----
         if self.guard_fates && is_fate_question(message) {
@@ -155,16 +166,7 @@ impl Engine {
         if report_has_violation(&report) {
             on_stage("repair"); // design stamp: "INKING OUT A SPOILER"
             report = self.repair(
-                store,
-                story_id,
-                character_id,
-                message,
-                &system,
-                &visible,
-                &forbidden,
-                &unmet,
-                &character,
-                report,
+                message, &system, &visible, &forbidden, &unmet, &character, report,
             )?;
         }
 
@@ -246,9 +248,6 @@ impl Engine {
     #[allow(clippy::too_many_arguments)]
     fn repair(
         &self,
-        _store: &Store,
-        _story_id: i64,
-        _character_id: Option<i64>,
         message: &str,
         system: &str,
         visible: &[Fact],
@@ -402,6 +401,20 @@ pub struct GatedTurn {
     pub forbidden: Vec<Fact>,
     pub unmet: Vec<String>,
     pub character: Option<Character>,
+}
+
+/// Append the character's condensed relationship memory to the assembled
+/// system prompt. Kept out of gate_and_assemble so the API can run it after
+/// dropping the store lock. The memory note was itself spoiler-gated when
+/// written, so this opens no side door past the gate.
+pub fn apply_memory(system: &mut String, memory: Option<&str>) {
+    if let Some(m) = memory {
+        system.push_str(
+            "\n\n== WHAT YOU REMEMBER OF YOUR EARLIER TALKS WITH THE READER (your own private notes) ==\n",
+        );
+        system.push_str(m);
+        system.push('\n');
+    }
 }
 
 /// STAGE 1 (gate) + 1.5 (graph retrieval) + 2 (assemble). Deterministic; no model.

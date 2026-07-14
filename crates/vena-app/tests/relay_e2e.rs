@@ -5,7 +5,6 @@
 //! "provider" ever sees is captured and checked against the forbidden ledger:
 //! nothing past the reader's bookmark may leave the device.
 
-use std::io::Read;
 use std::sync::{Arc, Mutex};
 
 use vena_app::api::AppApi;

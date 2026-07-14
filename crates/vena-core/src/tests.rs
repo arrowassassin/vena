@@ -686,3 +686,41 @@ fn remote_repair_discloses_nothing() {
         "remote repair must use the no-disclosure instruction"
     );
 }
+
+#[test]
+fn short_sentence_spoiler_is_still_gated() {
+    // "Lucy dies" is two words — the old >=3 filter let it bypass Stage 4.
+    let (s, sid, _) = fixture();
+    s.set_progress(sid, 6, 0).unwrap();
+    let backend = ScriptedInference::new(vec![
+        "Yes. Lucy dies.".into(),
+        "I cannot say how it ends.".into(),
+    ]);
+    let eng = Engine::new(Box::new(backend)).with_mode(GateMode::Standard);
+    // A non-fate question so the draft is generated and reaches Stage 4 (a fate
+    // question would deflect before generation, masking the claim-filter bug).
+    let report = eng
+        .companion_turn(
+            &s,
+            sid,
+            None,
+            "What do you make of Lucy's illness?",
+            &mut |_| {},
+        )
+        .unwrap();
+    assert!(
+        report.repaired || report.redacted,
+        "short spoiler must be caught: {report:?}"
+    );
+    assert!(!report.reply.to_lowercase().contains("lucy dies"));
+}
+
+#[test]
+fn accented_name_does_not_false_match_prefix() {
+    // "Ana" (unmet) must not match inside "Anaïs" (met) — byte boundaries broke this.
+    let hits = crate::verify::unmet_characters("Anaïs waited by the harbour.", ["Ana"].into_iter());
+    assert!(hits.is_empty(), "accented word falsely matched: {hits:?}");
+    // but a real standalone mention is still caught
+    let hit = crate::verify::unmet_characters("Then Ana arrived.", ["Ana"].into_iter());
+    assert_eq!(hit, vec!["Ana".to_string()]);
+}

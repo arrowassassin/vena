@@ -12,10 +12,13 @@ use std::collections::HashSet;
 /// segmentation, pleasantries dropped. Good enough for gate regression; a model
 /// extractor can replace this behind the same signature.
 pub fn extract_claims(draft: &str) -> Vec<String> {
+    // Two words is enough to confirm a spoiler ("Lucy dies", "he lives") — the
+    // old >=3 filter let those bypass Stage 4 entirely. Only bare interjections
+    // ("Yes", "Indeed") are dropped, and pleasantries by prefix.
     draft
-        .split(['.', '!', '?', '\n'])
+        .split(['.', '!', '?', '\n', ';'])
         .map(|s| s.trim())
-        .filter(|s| s.split_whitespace().count() >= 3) // ignore "Yes.", "Indeed!"
+        .filter(|s| s.split_whitespace().count() >= 2)
         .filter(|s| !is_pleasantry(s))
         .map(|s| s.to_string())
         .collect()
@@ -144,14 +147,16 @@ fn name_mentioned(haystack_lower: &str, name_lower: &str) -> bool {
     if name_lower.is_empty() {
         return false;
     }
+    // Word boundaries are checked on CHARACTERS, not bytes: a byte-level
+    // is_ascii_alphanumeric treats every byte of a multi-byte letter (accents,
+    // Cyrillic, CJK) as a boundary, so "Ana" would falsely match inside "Anaïs".
+    let boundary = |c: Option<char>| c.map(|c| !c.is_alphanumeric()).unwrap_or(true);
     let mut start = 0;
     while let Some(pos) = haystack_lower[start..].find(name_lower) {
         let i = start + pos;
-        let before_ok = i == 0 || !haystack_lower.as_bytes()[i - 1].is_ascii_alphanumeric();
-        let after = i + name_lower.len();
-        let after_ok = after >= haystack_lower.len()
-            || !haystack_lower.as_bytes()[after].is_ascii_alphanumeric();
-        if before_ok && after_ok {
+        let before = haystack_lower[..i].chars().next_back();
+        let after = haystack_lower[i + name_lower.len()..].chars().next();
+        if boundary(before) && boundary(after) {
             return true;
         }
         start = i + name_lower.len();

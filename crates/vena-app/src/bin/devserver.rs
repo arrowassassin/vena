@@ -103,11 +103,13 @@ fn handle(mut req: tiny_http::Request, api: &Arc<AppApi>, events: &Events) {
     let ui_root = ui_dist();
     let rel = url.trim_start_matches('/').split('?').next().unwrap_or("");
     let candidate = if rel.is_empty() { "index.html" } else { rel };
-    let path = ui_root.join(candidate);
-    let path = if path.is_file() {
-        path
-    } else {
-        ui_root.join("index.html")
+    // Path-traversal guard: resolve against ui_root and confirm the result
+    // stays inside it. `GET /../../etc/passwd` must never read off disk — the
+    // dev bridge binds loopback but is still a real HTTP server.
+    let ui_canon = ui_root.canonicalize().unwrap_or_else(|_| ui_root.clone());
+    let path = match ui_root.join(candidate).canonicalize() {
+        Ok(p) if p.starts_with(&ui_canon) && p.is_file() => p,
+        _ => ui_root.join("index.html"),
     };
     match std::fs::read(&path) {
         Ok(bytes) => {
@@ -337,14 +339,14 @@ fn dispatch(
             let ev = events.clone();
             let tier = s("tier");
             let t2 = tier.clone();
-            let r = api.download_local_model(&tier, |pct| {
+            api.download_local_model(&tier, |pct| {
                 push(
                     &ev,
                     "model:progress",
                     serde_json::json!({ "tier": t2, "pct": pct }),
                 );
             })?;
-            jv(r)
+            jv(())
         }
         "get_settings" => api.get_settings(),
         "set_setting" => jv(api.set_setting(&s("key"), &s("value"))?),

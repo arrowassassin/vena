@@ -150,24 +150,12 @@ impl OpenAiClient {
         format!("{}/v1/chat/completions", self.base_url)
     }
 
-    /// A URL is on-device only if it targets loopback. Everything else is remote and
-    /// the Cloud Relay invariant applies (no ungated content may be sent).
+    /// A URL is on-device only if it targets loopback. Everything else is remote
+    /// and the Cloud Relay invariant applies (no ungated content may be sent).
+    /// Uses the shared host parser so a `localhost:pw@evil.com` authority can't
+    /// masquerade as on-device — that would defeat the privacy invariant.
     fn is_remote_host(base_url: &str) -> bool {
-        let host = base_url
-            .split("://")
-            .nth(1)
-            .unwrap_or(base_url)
-            .split('/')
-            .next()
-            .unwrap_or("")
-            .split(':')
-            .next()
-            .unwrap_or("")
-            .to_ascii_lowercase();
-        !matches!(
-            host.as_str(),
-            "localhost" | "127.0.0.1" | "0.0.0.0" | "::1" | "[::1]"
-        )
+        !crate::util::is_loopback_host(&crate::util::url_host(base_url))
     }
 }
 

@@ -231,14 +231,16 @@ fn mentions_word(haystack_lower: &str, needle_lower: &str) -> bool {
     if needle_lower.is_empty() {
         return false;
     }
-    let bytes = haystack_lower.as_bytes();
+    // Character-level boundaries (not bytes): a byte check treats every byte of
+    // a multi-byte letter as a boundary, so "art" would spuriously match inside
+    // a non-ASCII word. Mirrors verify::name_mentioned.
+    let boundary = |c: Option<char>| c.map(|c| !c.is_alphanumeric()).unwrap_or(true);
     let mut start = 0;
     while let Some(pos) = haystack_lower[start..].find(needle_lower) {
         let i = start + pos;
-        let before_ok = i == 0 || !bytes[i - 1].is_ascii_alphanumeric();
-        let after = i + needle_lower.len();
-        let after_ok = after >= bytes.len() || !bytes[after].is_ascii_alphanumeric();
-        if before_ok && after_ok {
+        let before = haystack_lower[..i].chars().next_back();
+        let after = haystack_lower[i + needle_lower.len()..].chars().next();
+        if boundary(before) && boundary(after) {
             return true;
         }
         start = i + needle_lower.len();
@@ -256,7 +258,7 @@ pub fn merge_retrieval(
 ) -> Vec<crate::model::Fact> {
     let mut seen = std::collections::HashSet::new();
     let mut merged: Vec<crate::model::Fact> = Vec::new();
-    for f in keyword.into_iter().chain(graph.into_iter()) {
+    for f in keyword.into_iter().chain(graph) {
         if seen.insert(f.id) {
             merged.push(f);
         }

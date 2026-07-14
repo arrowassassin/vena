@@ -1,8 +1,8 @@
-//! Ledger extraction (§7, Appendix B) — the expensive step. Two real paths:
-//!  - `extract_with_model`: run a strong model over each chapter (the full-tier
-//!    forge; used by maintainers with a BYO key, or a local big model).
-//!  - `load_curated`: a maintainer-authored/verified ledger for a flagship prebuilt
-//!    package (§0.5.5, §7). Real data, hand-checked — the sanctioned prebuilt path.
+//! Ledger extraction (§7, Appendix B) — the expensive step. Two real paths.
+//! `extract_with_model` runs a strong model over each chapter (the full-tier
+//! forge; used by maintainers with a BYO key, or a local big model).
+//! `load_curated` loads a maintainer-authored/verified ledger for a flagship
+//! prebuilt package (§0.5.5, §7) — real data, hand-checked.
 //! Both feed the SAME downstream: scene segmentation, story-graph edge derivation,
 //! and package assembly.
 

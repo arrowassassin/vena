@@ -271,9 +271,31 @@ impl AppApi {
         // written at import, and every cached cover/portrait asset. Otherwise the
         // full canon + ledger + art stay recoverable on disk after a "burn".
         let slug = self.store().get_book(id).ok().map(|b| b.slug);
+        // Clear the wiki full-spoiler consent BEFORE burning the rows. SQLite
+        // reuses a deleted rowid, so a later import inheriting this id must not
+        // inherit a stale "unseal everything" grant.
+        let _ = self
+            .store()
+            .set_setting(&format!("spoiler_consent:{id}"), "0");
+        if let Some(slug) = &slug {
+            // paint staleness markers are keyed by slug — drop them too, so a
+            // burn leaves no trace of the reader's position for this book
+            let _ = self
+                .store()
+                .set_setting(&format!("cover_painted_ch::{slug}"), "");
+            let _ = self
+                .store()
+                .clear_settings_prefix(&format!("portrait_painted_ch::{slug}::"));
+        }
         self.store().burn_book(id)?;
-        if let Some(slug) = slug {
+        if let Some(slug) = &slug {
             let _ = std::fs::remove_file(self.data_dir.join(format!("{slug}.vena")));
+            // extracted comic pages live under assets/manga/{slug}/ — a CBZ can
+            // be hundreds of MB; leaving them breaks the hard-delete promise and
+            // never reclaims the disk
+            if let Ok(assets) = self.assets_dir() {
+                let _ = std::fs::remove_dir_all(assets.join("manga").join(slug));
+            }
         }
         if let Ok(dir) = self.assets_dir() {
             if let Ok(entries) = std::fs::read_dir(&dir) {
@@ -334,50 +356,61 @@ impl AppApi {
         on_stage: &mut dyn FnMut(&str),
     ) -> Result<TurnReport> {
         let engine = self.build_engine()?;
-        let store = self.store();
-        let progress = store.get_progress(book_id)?.0;
-        // Persist the turn (audit trail; pinned_progress).
-        let convo = self.ensure_conversation(&store, book_id, character_id)?;
-        // Conversation memory, chatbot-shaped: a rolling condensed note over
-        // the older exchanges + the recent verbatim window, both spoiler-gated
-        // by pinned progress and loaded BEFORE this message lands.
-        let memory = store.latest_chat_memory(convo, progress)?;
-        let history: Vec<(String, String)> = store
-            .recent_messages(convo, 8, progress)?
-            .into_iter()
-            .map(|(role, text, _)| (role, text))
-            .collect();
-        // Compaction: every ~6 exchanges, re-condense everything older than
-        // the window into a fresh note. Best-effort — a failed condense (no
-        // engine, offline) costs nothing but staler memory.
-        let n = store.count_messages(convo, progress)?;
-        if n >= 20 && n % 12 == 0 {
-            let older: Vec<(String, String)> = store
-                .recent_messages(convo, 48, progress)?
+        // ── Phase 1: GATE + gather memory/history, holding the lock briefly ──
+        // Inference (the slow part — a local 7B turn is tens of seconds) runs in
+        // phase 2 with NO lock held, so a chat turn no longer freezes every
+        // other command (list_books, get_settings, a second tab) behind it.
+        on_stage("gate");
+        let (convo, progress, gated, history, older) = {
+            let store = self.store();
+            let progress = store.get_progress(book_id)?.0;
+            let convo = self.ensure_conversation(&store, book_id, character_id)?;
+            let memory = store.latest_chat_memory(convo, progress)?;
+            let history: Vec<(String, String)> = store
+                .recent_messages(convo, 8, progress)?
                 .into_iter()
-                .rev()
-                .skip(8)
-                .rev()
                 .map(|(role, text, _)| (role, text))
                 .collect();
-            if !older.is_empty() {
-                if let Ok(note) = engine.condense(&older) {
-                    let _ = store.add_chat_memory(convo, note.trim(), progress);
-                }
+            let mut gated =
+                vena_core::engine::gate_and_assemble(&store, book_id, character_id, message)?;
+            vena_core::engine::apply_memory(&mut gated.system, memory.as_deref());
+            // Compaction is due every ~6 exchanges — capture the window to
+            // condense now, but run the (LLM) condense outside the lock.
+            let n = store.count_messages(convo, progress)?;
+            let older = if n >= 20 && n % 12 == 0 {
+                store
+                    .recent_messages(convo, 48, progress)?
+                    .into_iter()
+                    .rev()
+                    .skip(8)
+                    .rev()
+                    .map(|(role, text, _)| (role, text))
+                    .collect::<Vec<_>>()
+            } else {
+                Vec::new()
+            };
+            (convo, progress, gated, history, older)
+        };
+
+        // ── Phase 2: inference, NO lock held ──
+        let condensed = if older.is_empty() {
+            None
+        } else {
+            engine.condense(&older).ok().map(|s| s.trim().to_string())
+        };
+        // gate stamp already emitted; finish_turn resumes at compose
+        let report = engine.finish_turn(gated, message, &history, on_stage)?;
+
+        // ── Phase 3: persist, holding the lock briefly ──
+        {
+            let store = self.store();
+            if let Some(note) = condensed {
+                let _ = store.add_chat_memory(convo, &note, progress);
             }
+            store.add_message(convo, "user", message, progress, "{}")?;
+            let verify_json = serde_json::to_string(&report.claims).unwrap_or_else(|_| "[]".into());
+            store.add_message(convo, "assistant", &report.reply, progress, &verify_json)?;
         }
-        store.add_message(convo, "user", message, progress, "{}")?;
-        let report = engine.companion_turn_with_history(
-            &store,
-            book_id,
-            character_id,
-            message,
-            memory.as_deref(),
-            &history,
-            on_stage,
-        )?;
-        let verify_json = serde_json::to_string(&report.claims).unwrap_or_else(|_| "[]".into());
-        store.add_message(convo, "assistant", &report.reply, progress, &verify_json)?;
         Ok(report)
     }
 
@@ -735,37 +768,38 @@ impl AppApi {
     // ============================ Models & settings ============================
 
     pub fn get_ai_status(&self) -> Result<AiStatus> {
-        let store = self.store();
-        let mode = self.setting_or(&store, K_CHAT_MODE, "cloud");
-        let (model, ready) = match mode.as_str() {
-            "local" => {
-                // ready = the embedded runtime has the weights on disk, OR an
-                // external server actually answers. Never a bare settings flag.
-                let flagged = self.setting_bool_locked(&store, K_LOCAL_READY, false);
-                let embedded =
-                    cfg!(feature = "embedded-llm") && self.local_weights(&store).is_some();
-                let ready = flagged
-                    && (embedded || {
-                        let base = self.setting_or(&store, K_LOCAL_BASE, "http://localhost:11434");
-                        crate::net::probe_openai_base(&base)
-                    });
-                (self.setting_or(&store, K_LOCAL_MODEL, "QUILL·7B"), ready)
-            }
+        // Snapshot everything the decision needs, then DROP the lock before any
+        // network probe. get_ai_status is called on every settings hydrate; a
+        // 2s probe held under the global profile Mutex froze all API traffic.
+        let (mode, model, flagged, embedded, local_base, cloud_has_key, cloud_base, experimental) = {
+            let store = self.store();
+            let mode = self.setting_or(&store, K_CHAT_MODE, "cloud");
+            let model = if mode == "local" {
+                self.setting_or(&store, K_LOCAL_MODEL, "QUILL·7B")
+            } else {
+                self.setting_or(&store, K_CLOUD_MODEL, "Cloud Relay")
+            };
+            let experimental =
+                !self.setting_bool_locked(&store, &local_validated_key(&model), false);
+            (
+                mode.clone(),
+                model,
+                self.setting_bool_locked(&store, K_LOCAL_READY, false),
+                cfg!(feature = "embedded-llm") && self.local_weights(&store).is_some(),
+                self.setting_or(&store, K_LOCAL_BASE, "http://localhost:11434"),
+                self.keystore.get(KC_CLOUD_KEY)?.is_some() || std::env::var("VENA_API_KEY").is_ok(),
+                self.setting_or(&store, K_CLOUD_BASE, ""),
+                experimental,
+            )
+        };
+        let ready = match mode.as_str() {
+            // probe runs with NO lock held
+            "local" => flagged && (embedded || crate::net::probe_openai_base(&local_base)),
             _ => {
-                let has_key = self.keystore.get(KC_CLOUD_KEY)?.is_some()
-                    || std::env::var("VENA_API_KEY").is_ok();
-                let base = self.setting_or(&store, K_CLOUD_BASE, "");
-                let ready = has_key && (!base.is_empty() || std::env::var("VENA_BASE_URL").is_ok());
-                (self.setting_or(&store, K_CLOUD_MODEL, "Cloud Relay"), ready)
+                cloud_has_key && (!cloud_base.is_empty() || std::env::var("VENA_BASE_URL").is_ok())
             }
         };
-        // The eval steer (§11.5) is now DEVICE-CORRECT, not a global constant: local
-        // chat is "experimental" until THIS device's tier passes the in-app gate probe
-        // (Test the Gate → RUN 12 PROBES with 0 leaks), which promotes it via
-        // set_local_validated. A tier that GO's on a 32 GB desktop but not a phone is
-        // handled correctly because validation is keyed by (device, model).
-        let local_experimental =
-            !self.setting_bool_locked(&store, &local_validated_key(&model), false);
+        let local_experimental = experimental;
         Ok(AiStatus {
             mode: if ready { mode.clone() } else { "none".into() },
             model,
@@ -1280,11 +1314,16 @@ impl AppApi {
             on_progress(100, "forge");
             return self.store().get_book(sid);
         }
-        // Otherwise download the EPUB then import+forge.
+        // Otherwise download the EPUB then import+forge. Pass the user's
+        // configured hosts so a download from their own OPDS catalog isn't
+        // rejected by the allowlist (it only auto-allows the fixed sources).
         let tmp = self
             .data_dir
             .join(format!("dl-{}.epub", slugify(&item.title)));
-        crate::net::download_file(url, &tmp, &mut |p| on_progress(p * 60 / 100, "download"))?;
+        let hosts = self.user_hosts();
+        crate::net::download_file_verified(url, &tmp, None, &hosts, &mut |p| {
+            on_progress(p * 60 / 100, "download")
+        })?;
         let meta = self.import_book(&tmp.to_string_lossy(), |p, _| {
             on_progress(60 + p * 40 / 100, "forge")
         })?;
@@ -1295,9 +1334,18 @@ impl AppApi {
     pub fn add_opds_catalog(&self, url: &str, name: &str) -> Result<String> {
         let store = self.store();
         let mut list = self.opds_catalogs(&store);
-        let id = format!("opds-{}", list.len() + 1);
-        list.push(serde_json::json!({ "id": id, "name": name, "url": url }));
-        store.set_setting("opds_catalogs", &serde_json::Value::Array(list).to_string())?;
+        // Id derived from the URL, not the list length: length-based ids collide
+        // after a removal (remove opds-1, next add reuses opds-2 → two entries
+        // share an id, and one remove deletes both). Re-adding the same URL is
+        // idempotent under this scheme.
+        let id = format!(
+            "opds-{}",
+            &vena_core::hash::sha256_hex(url.as_bytes())[..12]
+        );
+        if !list.iter().any(|c| c["id"].as_str() == Some(&id)) {
+            list.push(serde_json::json!({ "id": id, "name": name, "url": url }));
+            store.set_setting("opds_catalogs", &serde_json::Value::Array(list).to_string())?;
+        }
         Ok(id)
     }
 
@@ -1443,7 +1491,7 @@ impl AppApi {
         let brand = self.setting_or(store, K_LOCAL_MODEL, "");
         let t = MODEL_TIERS.iter().find(|t| t.brand == brand)?;
         let path = self.tier_gguf_path(t);
-        weights_plausible(&path, t.size_gb).then(|| (path, brand))
+        weights_plausible(&path, t.size_gb).then_some((path, brand))
     }
 
     /// Cloud Relay backend. Takes the ALREADY-HELD store guard — never re-locks
@@ -1556,7 +1604,9 @@ fn insert_ledger_rows(
         }
     }
     for c in &ledger.characters {
-        if !char_id_by_name.contains_key(&c.name.to_lowercase()) {
+        if let std::collections::hash_map::Entry::Vacant(e) =
+            char_id_by_name.entry(c.name.to_lowercase())
+        {
             let id = store.insert_character(
                 story_id,
                 &c.name,
@@ -1564,7 +1614,7 @@ fn insert_ledger_rows(
                 &c.voice,
                 c.first_appearance_chapter,
             )?;
-            char_id_by_name.insert(c.name.to_lowercase(), id);
+            e.insert(id);
             for a in &c.aliases {
                 char_id_by_name.entry(a.to_lowercase()).or_insert(id);
             }
@@ -1708,14 +1758,39 @@ impl AppApi {
             // translated — the ≤-bookmark invariant holds at the boundary too.
             let progress = store.get_progress(book_id)?.0;
             let book = store.get_book(book_id)?;
+            // Verify the ENTIRE selection is within read text, not just a
+            // prefix — a first-80-chars probe let a caller smuggle an unread
+            // chapter past the gate by prefixing it with a read snippet. Match
+            // the whole needle against the normalized plain text of read
+            // chapters (selections come from rendered text, so tags are stripped
+            // and whitespace collapsed on both sides).
+            let norm = |s: &str| {
+                let mut out = String::with_capacity(s.len());
+                let mut in_tag = false;
+                let mut last_ws = true;
+                for c in s.chars() {
+                    match c {
+                        '<' => in_tag = true,
+                        '>' => in_tag = false,
+                        _ if in_tag => {}
+                        c if c.is_whitespace() => {
+                            if !last_ws {
+                                out.push(' ');
+                                last_ws = true;
+                            }
+                        }
+                        c => {
+                            out.push(c);
+                            last_ws = false;
+                        }
+                    }
+                }
+                out.trim().to_string()
+            };
+            let want = norm(needle);
             let mut found = false;
-            let probe: String = needle.chars().take(80).collect();
             for seq in 1..=progress.min(book.episode_count) {
-                if store
-                    .get_episode(book_id, seq)?
-                    .content_html
-                    .contains(&probe)
-                {
+                if norm(&store.get_episode(book_id, seq)?.content_html).contains(&want) {
                     found = true;
                     break;
                 }
@@ -1880,7 +1955,10 @@ impl AppApi {
             let due = (!png && !svg)                                  // nothing at all
                 || (real && !png && painted_at < progress)             // typographic → painted: one try per bookmark
                 || (real && painted_at >= 0 && progress - painted_at >= 8); // stale: story moved on
-            if due && self.generate_cover(b.id, png, |_| {}).is_ok() {
+                                                                            // regenerate whenever paint is available: otherwise generate_cover
+                                                                            // early-returns the existing typographic SVG and never paints over
+                                                                            // it — the whole point of the upgrade/stale paths.
+            if due && self.generate_cover(b.id, real, |_| {}).is_ok() {
                 covers += 1;
                 let _ = self.store().set_setting(&ckey, &progress.to_string());
             }

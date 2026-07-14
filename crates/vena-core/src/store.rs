@@ -36,6 +36,7 @@ impl Store {
 
     // ---------- story ----------
 
+    #[allow(clippy::too_many_arguments)]
     pub fn insert_story(
         &self,
         slug: &str,
@@ -845,6 +846,23 @@ impl Store {
             "INSERT INTO setting (key,value) VALUES (?1,?2)
              ON CONFLICT(key) DO UPDATE SET value=?2",
             params![key, value],
+        )?;
+        Ok(())
+    }
+
+    /// Delete every setting whose key begins with `prefix` (LIKE-escaped). Used
+    /// by burn to clear per-book markers whose keys embed the slug/character id.
+    pub fn clear_settings_prefix(&self, prefix: &str) -> Result<()> {
+        let like = format!(
+            "{}%",
+            prefix
+                .replace('\\', "\\\\")
+                .replace('%', "\\%")
+                .replace('_', "\\_")
+        );
+        self.conn.execute(
+            "DELETE FROM setting WHERE key LIKE ?1 ESCAPE '\\'",
+            params![like],
         )?;
         Ok(())
     }

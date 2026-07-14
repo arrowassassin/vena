@@ -2574,9 +2574,11 @@ class Component extends DCLogic {
     V.call("get_episode", { bookId: ab.nid, seq: seq }).then(function (ep) {
       self._episode = ep;
       self._readerSeq = seq;
-      var div = document.createElement("div");
-      div.innerHTML = ep.content_html || "";
-      var ps = Array.prototype.map.call(div.querySelectorAll("p"), function (p) {
+      // DOMParser inert-parses the book's chapter HTML: unlike div.innerHTML it
+      // never runs scripts or fires <img onerror> — a crafted EPUB can't inject
+      // JS into the reader. We only read textContent out of it anyway.
+      var doc = new DOMParser().parseFromString(ep.content_html || "", "text/html");
+      var ps = Array.prototype.map.call(doc.querySelectorAll("p"), function (p) {
         // strip raw emphasis underscores / em-dash digraphs the plain-text
         // extraction leaves behind (matches the desktop reader's cleaning)
         return (p.textContent || "").replace(/_/g, "").replace(/--/g, "—").replace(/\s+/g, " ").trim();
