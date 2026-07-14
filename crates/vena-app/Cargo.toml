@@ -4,6 +4,10 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 description = "Vena Tauri 2 shell: typed IPC commands, events, state. The command LOGIC lives in the lib (no Tauri dep, fully testable); the `vena` bin is the thin Tauri wrapper."
+# This package ships two binaries (`vena` = the Tauri app, `vena-devserver` = the
+# dev bridge). Tauri's bundler needs to know which one is the app, so name it
+# explicitly — otherwise `tauri build` errors "failed to find main binary".
+default-run = "vena"
 
 [lib]
 name = "vena_app"

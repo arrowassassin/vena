@@ -18,7 +18,11 @@ serde_json = "1"
 rusqlite = { version = "0.40", features = ["bundled"] }
 anyhow = "1"
 thiserror = "2"
-reqwest = { version = "0.12", features = ["json", "blocking", "stream"] }
+# rustls (not the default native-tls/OpenSSL): OpenSSL has no prebuilt lib for
+# the Android cross-targets, so a native-tls reqwest fails `cargo build` for
+# aarch64-linux-android in the bundle workflow. rustls is pure-Rust and
+# cross-compiles cleanly to every desktop + Android target.
+reqwest = { version = "0.12", default-features = false, features = ["json", "blocking", "stream", "rustls-tls"] }
 tokio = { version = "1", features = ["full"] }
 clap = { version = "4", features = ["derive"] }
 regex = "1"
