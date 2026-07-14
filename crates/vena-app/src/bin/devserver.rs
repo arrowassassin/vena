@@ -157,7 +157,23 @@ fn ui_dist() -> std::path::PathBuf {
 }
 
 fn push(events: &Events, name: &str, payload: serde_json::Value) {
-    events.lock().unwrap().push((name.to_string(), payload));
+    let mut q = events.lock().unwrap();
+    // Progress events fire per 64 KB chunk — tens of thousands over a 4 GB
+    // download. Collapse consecutive same-name progress events so a tab that
+    // stopped draining (onboarding: "downloads keep running") can't grow the
+    // queue without bound; a hard cap backstops any other event storm.
+    if name.ends_with(":progress") {
+        if let Some((last_name, last)) = q.last_mut() {
+            if last_name == name {
+                *last = payload;
+                return;
+            }
+        }
+    }
+    if q.len() >= 4096 {
+        q.remove(0);
+    }
+    q.push((name.to_string(), payload));
 }
 
 fn jv<T: serde::Serialize>(v: T) -> vena_core::Result<serde_json::Value> {

@@ -1937,6 +1937,15 @@ impl AppApi {
         let _reset = Reset;
 
         let real = self.has_real_paint();
+        // Painting locally loads a multi-GB SD model; if a chat tier is resident
+        // too, the pair can blow the RAM budget. Evict the LLM before a local
+        // paint batch — chat reloads lazily on its next turn.
+        #[cfg(all(feature = "embedded-llm", feature = "embedded-paint"))]
+        if real {
+            if let Some((path, _)) = self.local_weights(&self.store()) {
+                crate::local_llm::evict(&path);
+            }
+        }
         let books = self.store().list_books()?;
         let assets = self.assets_dir()?;
         let mut covers = 0u32;

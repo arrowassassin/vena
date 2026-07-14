@@ -718,9 +718,9 @@ fn short_sentence_spoiler_is_still_gated() {
 #[test]
 fn accented_name_does_not_false_match_prefix() {
     // "Ana" (unmet) must not match inside "Anaïs" (met) — byte boundaries broke this.
-    let hits = crate::verify::unmet_characters("Anaïs waited by the harbour.", ["Ana"].into_iter());
+    let hits = crate::verify::unmet_characters("Anaïs waited by the harbour.", ["Ana"]);
     assert!(hits.is_empty(), "accented word falsely matched: {hits:?}");
     // but a real standalone mention is still caught
-    let hit = crate::verify::unmet_characters("Then Ana arrived.", ["Ana"].into_iter());
+    let hit = crate::verify::unmet_characters("Then Ana arrived.", ["Ana"]);
     assert_eq!(hit, vec!["Ana".to_string()]);
 }

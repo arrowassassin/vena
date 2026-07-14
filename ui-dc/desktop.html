@@ -4410,7 +4410,9 @@ class Component extends DCLogic {
     // streaming forge: while a book forges chapter-by-chapter, the companion is
     // usable for chapters already committed (<= forgedThrough) or once any facts
     // exist — driven by the real forgedThrough from forge:progress.
-    const activeForge = ab ? D.forge[ab.id] : null;
+    // forge is keyed by the NUMERIC book id (matching forge:progress events),
+    // not the slug — ab.id is the slug, so read through ab.meta.id
+    const activeForge = ab && ab.meta ? D.forge[ab.meta.id] : null;
     const forgedThrough = activeForge && activeForge.forgedThrough != null
       ? (activeForge.forgedThrough | 0)
       : (typeof st.forgedThrough === 'number' ? st.forgedThrough : 0);

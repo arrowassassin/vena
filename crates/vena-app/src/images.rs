@@ -11,6 +11,14 @@
 use crate::api::AppApi;
 use vena_core::{Result, VenaError};
 
+/// Monotonic id for temp render filenames — keeps concurrent renders from
+/// sharing an output path.
+fn next_render_id() -> u64 {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static N: AtomicU64 = AtomicU64::new(0);
+    N.fetch_add(1, Ordering::Relaxed)
+}
+
 impl AppApi {
     /// generate_portrait — cache key includes current progress so a portrait
     /// refreshes when canon changes appearance (per-chapter cache per §11.4).
@@ -160,7 +168,12 @@ impl AppApi {
         // downloaded weights paint with no CLI. Failures fall through honestly.
         #[cfg(feature = "embedded-paint")]
         {
-            let tmp = self.assets_dir()?.join(".paint-tmp.png");
+            // Unique temp name per render — a fixed path races when auto_paint
+            // and an interactive generate_portrait overlap (one reads the
+            // other's half-written file).
+            let tmp = self
+                .assets_dir()?
+                .join(format!(".paint-tmp-{}.png", next_render_id()));
             match crate::local_paint::render(&model, prompt, w, h, &tmp) {
                 Ok(()) => {
                     let bytes = std::fs::read(&tmp)?;
@@ -173,7 +186,11 @@ impl AppApi {
         if !engine {
             return Ok(None); // weights downloaded, engine missing — status reports it
         }
-        let out = std::env::temp_dir().join(format!("vena-sd-{}.png", std::process::id()));
+        let out = std::env::temp_dir().join(format!(
+            "vena-sd-{}-{}.png",
+            std::process::id(),
+            next_render_id()
+        ));
         let status = std::process::Command::new("sd")
             .args(["-m"])
             .arg(&model)
