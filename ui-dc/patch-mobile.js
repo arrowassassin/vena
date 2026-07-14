@@ -1441,13 +1441,17 @@
         // stale flags and dead downloads never show INSTALLED
         var installed = !!t.installed;
         var partial = !!t.partial && !installed;
-        var active = installed && st.model === t.id;
+        // ACTIVE requires the engine to actually answer (get_ai_status probes)
+        var aiUp = !!(self._ai && self._ai.ready);
+        var active = installed && st.model === t.id && aiUp;
+        var offline = installed && st.model === t.id && !aiUp;
         var downloading = st.dl.status === "downloading" && st.dl.tier === t.id;
         return {
           id: t.id, chip: t.chip, name: t.brand,
-          size: t.size_gb.toFixed(1) + " GB" + (installed ? " · INSTALLED"
-            : partial ? " · PARTIAL — RESUME OR DELETE"
-              : blocked ? " · NEEDS " + t.min_ram_gb + " GB" : ""),
+          size: t.size_gb.toFixed(1) + " GB" + (offline ? " · ENGINE OFFLINE"
+            : installed ? " · INSTALLED"
+              : partial ? " · PARTIAL — RESUME OR DELETE"
+                : blocked ? " · NEEDS " + t.min_ram_gb + " GB" : ""),
           desc: MODEL_DESCS[t.id] || "",
           installed: installed, blocked: blocked, active: active,
           op: blocked ? ".45" : "1",
@@ -1456,9 +1460,10 @@
           chipBg: active ? "var(--cyan)" : "var(--ink)", chipCol: "var(--inv)",
           downloading: downloading,
           dlW: (downloading ? st.dl.pct : 0) + "%", dlPct: downloading ? st.dl.pct : 0,
-          btnLabel: blocked ? "TOO BIG" : active ? "ACTIVE" : installed ? "ACTIVATE"
-            : downloading ? (st.dl.pct >= 99 ? "VERIFYING…" : "STOP ✕")
-              : partial ? "RESUME ↓" : "DOWNLOAD",
+          btnLabel: blocked ? "TOO BIG" : active ? "ACTIVE" : offline ? "START SERVER →"
+            : installed ? "ACTIVATE"
+              : downloading ? (st.dl.pct >= 99 ? "VERIFYING…" : "STOP ✕")
+                : partial ? "RESUME ↓" : "DOWNLOAD",
           btnBg: active ? "var(--cyan)" : "transparent",
           btnCol: active ? "var(--inv)" : blocked ? "var(--mut2)" : "var(--ink)",
           btnCur: blocked ? "default" : "pointer",
@@ -1466,6 +1471,10 @@
           btnAct: function (e) {
             if (e && e.stopPropagation) e.stopPropagation();
             if (blocked || active) return;
+            if (offline) {
+              self._toast("WEIGHTS ON DISK, NO RUNTIME — RUN ./scripts/serve-local.sh OR SWITCH TO CLOUD RELAY");
+              return;
+            }
             if (installed) { self._activateLocal(t.id, t.brand); return; }
             if (downloading) {
               // STOP keeps the .part — the same button then offers RESUME

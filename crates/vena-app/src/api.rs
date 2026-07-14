@@ -732,7 +732,11 @@ impl AppApi {
         let mode = self.setting_or(&store, K_CHAT_MODE, "cloud");
         let (model, ready) = match mode.as_str() {
             "local" => {
-                let ready = self.setting_bool_locked(&store, K_LOCAL_READY, false);
+                // ready = weights configured AND a server actually answering —
+                // an installed model with no runtime must not claim to speak
+                let flagged = self.setting_bool_locked(&store, K_LOCAL_READY, false);
+                let base = self.setting_or(&store, K_LOCAL_BASE, "http://localhost:11434");
+                let ready = flagged && crate::net::probe_openai_base(&base);
                 (self.setting_or(&store, K_LOCAL_MODEL, "QUILL·7B"), ready)
             }
             _ => {

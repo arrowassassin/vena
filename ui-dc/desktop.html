@@ -4406,7 +4406,12 @@ class Component extends DCLogic {
       const installed = !!t.installed;
       const partial = !!t.partial && !installed;
       const blocked = t.min_ram_gb > 8;
-      const active = installed && S && S.default_chat_mode === 'local';
+      // ACTIVE (and the SPEAKING NOW chip) require the engine to actually
+      // answer — weights with no local server show ENGINE OFFLINE instead
+      const localMode = !!(S && S.default_chat_mode === 'local');
+      const aiUp = !!(D.ai && D.ai.ready);
+      const active = installed && localMode && aiUp;
+      const offline = installed && localMode && !aiUp;
       const downloading = st.dl.status === 'downloading' && st.dl.tier === t.id;
       const activate = () => {
         V.call('set_chat_mode', { mode: 'local' }).then(() => {
@@ -4416,9 +4421,10 @@ class Component extends DCLogic {
       };
       return {
         id: t.id, chip: t.chip, name: t.brand,
-        size: t.size_gb.toFixed(1) + ' GB' + (installed ? ' · INSTALLED'
-          : partial ? ' · PARTIAL — RESUME OR DELETE'
-            : blocked ? ' · NEEDS ' + t.min_ram_gb + ' GB RAM' : ''),
+        size: t.size_gb.toFixed(1) + ' GB' + (offline ? ' · INSTALLED · ENGINE OFFLINE'
+          : installed ? ' · INSTALLED'
+            : partial ? ' · PARTIAL — RESUME OR DELETE'
+              : blocked ? ' · NEEDS ' + t.min_ram_gb + ' GB RAM' : ''),
         desc: tierDescs[t.id] || '',
         active,
         op: blocked ? '.45' : '1',
@@ -4426,9 +4432,10 @@ class Component extends DCLogic {
         cur: installed && !active ? 'pointer' : 'default',
         chipBg: active ? 'var(--cyan)' : 'var(--ink)', chipCol: 'var(--inv)',
         downloading, dlW: (st.dl.pct | 0) + '%', dlPct: st.dl.pct | 0,
-        btnLabel: blocked ? 'TOO BIG' : active ? 'ACTIVE' : installed ? 'ACTIVATE'
-          : downloading ? ((st.dl.pct | 0) >= 99 ? 'VERIFYING…' : 'STOP ✕')
-            : partial ? 'RESUME ↓' : 'DOWNLOAD',
+        btnLabel: blocked ? 'TOO BIG' : active ? 'ACTIVE' : offline ? 'START SERVER →'
+          : installed ? 'ACTIVATE'
+            : downloading ? ((st.dl.pct | 0) >= 99 ? 'VERIFYING…' : 'STOP ✕')
+              : partial ? 'RESUME ↓' : 'DOWNLOAD',
         btnBg: active ? 'var(--cyan)' : 'transparent',
         btnCol: active ? 'var(--inv)' : blocked ? 'var(--mut2)' : 'var(--ink)',
         btnCur: blocked ? 'default' : 'pointer',
@@ -4436,6 +4443,10 @@ class Component extends DCLogic {
         btnAct: e => {
           e && e.stopPropagation && e.stopPropagation();
           if (blocked || active) return;
+          if (offline) {
+            this._toast('WEIGHTS ON DISK, NO RUNTIME — RUN ./scripts/serve-local.sh (NEEDS llama.cpp) OR SWITCH TO CLOUD RELAY');
+            return;
+          }
           if (downloading) {
             // STOP keeps the .part — the same button then offers RESUME
             if ((st.dl.pct | 0) < 99) V.call('cancel_model_download', { kind: 'chat', tier: t.id }).catch(() => {});
