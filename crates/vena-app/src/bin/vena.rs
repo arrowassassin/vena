@@ -523,6 +523,16 @@ fn paint_tiers(api: State<'_, Api>) -> Result<serde_json::Value, VenaError> {
 }
 
 #[tauri::command]
+fn delete_local_model(api: State<'_, Api>, tier: String) -> Result<serde_json::Value, VenaError> {
+    api.delete_local_model(&tier)
+}
+
+#[tauri::command]
+fn delete_paint_model(api: State<'_, Api>, tier: String) -> Result<serde_json::Value, VenaError> {
+    api.delete_paint_model(&tier)
+}
+
+#[tauri::command]
 async fn download_paint_model(
     app: tauri::AppHandle,
     api: State<'_, Api>,
@@ -653,6 +663,8 @@ fn main() {
             get_image_status,
             paint_tiers,
             download_paint_model,
+            delete_local_model,
+            delete_paint_model,
             get_manga_pages,
             get_manga_page,
             import_book_data,

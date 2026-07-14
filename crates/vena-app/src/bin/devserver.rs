@@ -361,6 +361,8 @@ fn dispatch(
                 );
             })
         }
+        "delete_local_model" => api.delete_local_model(&s("tier")),
+        "delete_paint_model" => api.delete_paint_model(&s("tier")),
         "get_manga_pages" => api.get_manga_pages(i("bookId")),
         "get_manga_page" => api.get_manga_page(i("bookId"), i("page")),
         "import_book_data" => {

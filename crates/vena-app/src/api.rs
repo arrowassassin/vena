@@ -925,8 +925,48 @@ impl AppApi {
             "cloud_model": self.setting_or(&store, K_CLOUD_MODEL, ""),
             "local_model": self.setting_or(&store, K_LOCAL_MODEL, ""),
             "local_ready": self.setting_bool_locked(&store, K_LOCAL_READY, false),
-            "tiers": MODEL_TIERS,
+            // per-tier install state comes from the weights actually on disk,
+            // so every downloaded tier (not just the last one) shows as such
+            "tiers": MODEL_TIERS
+                .iter()
+                .map(|t| {
+                    serde_json::json!({
+                        "id": t.id, "brand": t.brand, "chip": t.chip, "gguf": t.gguf,
+                        "size_gb": t.size_gb, "min_ram_gb": t.min_ram_gb,
+                        "installed": self.tier_gguf_path(t).exists(),
+                    })
+                })
+                .collect::<Vec<_>>(),
         }))
+    }
+
+    fn tier_gguf_path(&self, t: &vena_core::model::ModelTier) -> PathBuf {
+        self.data_dir
+            .join("models")
+            .join(format!("{}.gguf", t.gguf))
+    }
+
+    /// Delete a downloaded chat tier's weights (and any half-finished .part).
+    /// If the deleted tier was the configured local model, local readiness and
+    /// its device-validation stamp are cleared — the UI turns honest instantly.
+    pub fn delete_local_model(&self, tier: &str) -> Result<serde_json::Value> {
+        let t = MODEL_TIERS
+            .iter()
+            .find(|m| m.id == tier || m.chip == tier || m.brand == tier)
+            .ok_or_else(|| VenaError::Other(format!("unknown tier {tier}")))?;
+        let path = self.tier_gguf_path(t);
+        let existed = path.exists();
+        if existed {
+            std::fs::remove_file(&path)?;
+        }
+        let _ = std::fs::remove_file(path.with_extension("part"));
+        let store = self.store();
+        if self.setting_or(&store, K_LOCAL_MODEL, "") == t.brand {
+            store.set_setting(K_LOCAL_READY, "0")?;
+            store.set_setting(K_LOCAL_MODEL, "")?;
+            store.set_setting(&local_validated_key(t.brand), "0")?;
+        }
+        Ok(serde_json::json!({ "deleted": existed, "brand": t.brand }))
     }
 
     pub fn set_setting(&self, key: &str, value: &str) -> Result<()> {
@@ -980,12 +1020,7 @@ impl AppApi {
     /// Merged search across all sources, origin-tagged. Local vena-catalog (bundled
     /// prebuilt packages) + Project Gutenberg (Gutendex). OPDS/AO3 add in browse.
     pub fn store_search(&self, query: &str) -> Result<Vec<StoreItem>> {
-        let shelf: std::collections::HashSet<String> = self
-            .store()
-            .list_books()?
-            .into_iter()
-            .map(|b| b.title.to_lowercase())
-            .collect();
+        let on_shelf = self.on_shelf_check()?;
         let mut items = Vec::new();
 
         // vena-catalog: the bundled flagship packages.
@@ -1001,7 +1036,7 @@ impl AppApi {
                         license: Some("public-domain".into()),
                         download_url: Some(p.to_string_lossy().into()),
                         cover: None,
-                        on_shelf: shelf.contains("dracula"),
+                        on_shelf: on_shelf("Dracula"),
                     });
                 }
                 break;
@@ -1014,7 +1049,7 @@ impl AppApi {
                 for (id, title, author, epub, cover) in results.into_iter().take(20) {
                     items.push(StoreItem {
                         source: "gutenberg".into(),
-                        on_shelf: shelf.contains(&title.to_lowercase()),
+                        on_shelf: on_shelf(&title),
                         id,
                         title,
                         author,
@@ -1028,7 +1063,21 @@ impl AppApi {
         Ok(items)
     }
 
+    /// Whether a store title is already on the shelf (title or slug identity).
+    fn on_shelf_check(&self) -> Result<impl Fn(&str) -> bool> {
+        let books = self.store().list_books()?;
+        let titles: std::collections::HashSet<String> =
+            books.iter().map(|b| b.title.to_lowercase()).collect();
+        let slugs: std::collections::HashSet<String> =
+            books.iter().map(|b| b.slug.clone()).collect();
+        Ok(move |title: &str| {
+            titles.contains(&title.to_lowercase())
+                || slugs.contains(&vena_core::util::slugify(title))
+        })
+    }
+
     pub fn store_browse(&self, source: &str, cursor: Option<&str>) -> Result<Vec<StoreItem>> {
+        let on_shelf = self.on_shelf_check()?;
         match source {
             "gutenberg" => {
                 // cursor forms: None (popular p.1), "2" (page), "mystery@1" (topic@page).
@@ -1045,13 +1094,13 @@ impl AppApi {
                     .into_iter()
                     .map(|(id, title, author, epub, cover)| StoreItem {
                         source: "gutenberg".into(),
+                        on_shelf: on_shelf(&title),
                         id,
                         title,
                         author,
                         license: Some("public-domain".into()),
                         download_url: epub,
                         cover,
-                        on_shelf: false,
                     })
                     .collect())
             }
@@ -1065,13 +1114,13 @@ impl AppApi {
                     .into_iter()
                     .map(|(id, title, author, acquire)| StoreItem {
                         source: "opds".into(),
+                        on_shelf: on_shelf(&title),
                         id,
                         title,
                         author,
                         license: None,
                         download_url: acquire,
                         cover: None,
-                        on_shelf: false,
                     })
                     .collect())
             }
@@ -1544,12 +1593,12 @@ pub const PAINT_TIERS: &[(&str, &str, &str, &str, f32)] = &[
 impl AppApi {
     /// The paint tier catalog for the Settings panel.
     pub fn paint_tiers(&self) -> serde_json::Value {
-        let installed = self.installed_paint_model();
+        let dir = self.data_dir.join("models/paint");
         serde_json::json!(PAINT_TIERS
             .iter()
             .map(|(id, brand, _repo, file, size)| serde_json::json!({
                 "id": id, "brand": brand, "size_gb": size,
-                "installed": installed.as_deref() == Some(*file),
+                "installed": dir.join(file).exists(),
             }))
             .collect::<Vec<_>>())
     }
@@ -1585,6 +1634,24 @@ impl AppApi {
             &mut on_progress,
         )?;
         Ok(serde_json::json!({ "brand": brand, "engine_present": sd_cli_present() }))
+    }
+
+    /// Delete a paint tier's weights (and any half-finished .part). The paint
+    /// dir is dropped when empty so get_image_status stops reporting 'desktop'.
+    pub fn delete_paint_model(&self, tier: &str) -> Result<serde_json::Value> {
+        let (_, brand, _, file, _) = PAINT_TIERS
+            .iter()
+            .find(|(id, brand, ..)| *id == tier || *brand == tier)
+            .ok_or_else(|| VenaError::Other(format!("unknown paint tier {tier}")))?;
+        let dir = self.data_dir.join("models/paint");
+        let path = dir.join(file);
+        let existed = path.exists();
+        if existed {
+            std::fs::remove_file(&path)?;
+        }
+        let _ = std::fs::remove_file(path.with_extension("part"));
+        let _ = std::fs::remove_dir(&dir); // only succeeds when empty
+        Ok(serde_json::json!({ "deleted": existed, "brand": brand }))
     }
 
     fn installed_paint_model(&self) -> Option<String> {

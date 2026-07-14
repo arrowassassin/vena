@@ -1214,7 +1214,8 @@
       if (st.dl.status === "done" && !installedId) installedId = st.dl.tier;
       v.models = s.tiers.map(function (t) {
         var blocked = t.id === "arch";
-        var installed = t.id === installedId;
+        // the backend reports the weights actually on disk per tier
+        var installed = !!t.installed || t.id === installedId;
         var active = installed && st.model === t.id;
         var downloading = st.dl.status === "downloading" && st.dl.tier === t.id;
         return {

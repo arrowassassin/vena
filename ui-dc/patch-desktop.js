@@ -96,6 +96,7 @@
     this._venaDataPrivacy();
     this._venaMangaDom();
     this._venaComicsShelfDom();
+    this._venaModelDelDom();
   };
 
   P._venaInit = function () {
@@ -176,6 +177,30 @@
       };
     });
     this.setState({});
+    this._syncStoreShelf();
+  };
+
+  /* shelf membership drives every store row's ON YOUR SHELF state — re-synced
+   * whenever the shelf changes, so downloads AND burns both show truthfully */
+  P._findShelfBook = function (d) {
+    const slug = s => String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+    return (this._vena.books || []).find(b => b.slug === d.id || slug(b.title) === slug(d.title));
+  };
+
+  P._syncStoreShelf = function () {
+    const st = this.state;
+    const lists = [this.storeFeatured, this.storeSE, this.storeGut]
+      .concat((st.catalogs || []).map(c => c.books))
+      .concat([st.ao3Items || []]);
+    const upd = {};
+    lists.forEach(list => (list || []).forEach(d => {
+      const cur = (st.storeSt[d.id] || {}).status;
+      if (cur === 'dl' || cur === 'forge') return; // in flight — leave it be
+      const on = !!this._findShelfBook(d);
+      if (on && cur !== 'done') upd[d.id] = { status: 'done', pct: 100 };
+      else if (!on && cur === 'done') upd[d.id] = { status: 'idle', pct: 0 };
+    }));
+    if (Object.keys(upd).length) this.setState(s => ({ storeSt: Object.assign({}, s.storeSt, upd) }));
   };
 
   P._refreshBooks = function () {
@@ -296,11 +321,13 @@
       const done = {};
       (items || []).forEach(x => { if (x.on_shelf) done[x.id] = { status: 'done', pct: 100 }; });
       this.setState(s => ({ storeSt: Object.assign({}, s.storeSt, done) }));
+      this._syncStoreShelf();
     }).catch(e => this._honest('STORE CATALOG', e));
 
     const tryBrowse = (source, into, src) => V.call('store_browse', { source }).then(items => {
       this[into] = (items || []).map(x => this._storeItemDef(x, src));
       this.setState({});
+      this._syncStoreShelf();
       return true;
     }).catch(() => {
       this._vena.storeOffline = true;
@@ -340,7 +367,7 @@
     V.call('store_browse', { source: cat.id }).then(items => {
       const cats = this.state.catalogs.map((c, j) => j === i
         ? Object.assign({}, c, { loaded: true, books: (items || []).map(x => this._storeItemDef(x, 'opds')) }) : c);
-      this.setState({ catalogs: cats });
+      this.setState({ catalogs: cats }, () => this._syncStoreShelf());
     }).catch(e => {
       const cats = this.state.catalogs.map((c, j) => j === i ? Object.assign({}, c, { loaded: true, books: [] }) : c);
       this.setState({ catalogs: cats });
@@ -889,6 +916,62 @@
     }
   };
 
+  /* DELETE for downloaded weights (chat + paint tiers) — a small button on
+   * each installed row, two-tap confirm, frees the disk via the backend */
+  P._venaModelDelDom = function () {
+    if (this.state.screen !== 'settings') return;
+    const S = this._vena.settings || {};
+    const rows = [];
+    (S.tiers || []).forEach(t => {
+      if (t.installed) rows.push({ brand: t.brand, gb: t.size_gb, cmd: 'delete_local_model', tier: t.id, after: () => this._loadSettings() });
+    });
+    (this._vena.paintTiers || []).forEach(t => {
+      if (t.installed) rows.push({ brand: t.brand, gb: t.size_gb, cmd: 'delete_paint_model', tier: t.id, after: () => this._loadPaint() });
+    });
+    const want = {};
+    rows.forEach(r => { want[r.brand] = true; });
+    Array.prototype.forEach.call(document.querySelectorAll('[data-vena-model-del]'), b => {
+      if (!want[b.getAttribute('data-vena-model-del')]) b.remove();
+    });
+    rows.forEach(r => {
+      const lbl = Array.prototype.find.call(document.querySelectorAll('div,span'),
+        el => el.childElementCount === 0 && el.textContent === r.brand);
+      if (!lbl) return;
+      let row = lbl.parentElement;
+      while (row && !row.querySelector('button')) row = row.parentElement;
+      if (!row || row.querySelector('[data-vena-model-del]')) return;
+      const main = row.querySelector('button');
+      const b = document.createElement('button');
+      b.setAttribute('data-vena-model-del', r.brand);
+      const rest = () => {
+        b.__vArmed = false;
+        b.textContent = 'DELETE ✕';
+        b.style.borderColor = 'var(--mut2)';
+        b.style.color = 'var(--mut)';
+      };
+      b.style.cssText = "background:none;border:2px solid var(--mut2);color:var(--mut);padding:6px 10px;margin-left:8px;font-family:'IBM Plex Mono',monospace;font-size:8.5px;letter-spacing:.08em;font-weight:600;cursor:pointer";
+      rest();
+      b.addEventListener('click', e => {
+        e.stopPropagation();
+        if (!b.__vArmed) {
+          b.__vArmed = true;
+          b.textContent = 'SURE? ✕';
+          b.style.borderColor = 'var(--red)';
+          b.style.color = 'var(--red)';
+          setTimeout(() => { if (b.isConnected && b.__vArmed) rest(); }, 4000);
+          return;
+        }
+        b.textContent = 'DELETING…';
+        V.call(r.cmd, { tier: r.tier }).then(() => {
+          this._toast(r.brand + ' DELETED — ' + r.gb.toFixed(1) + ' GB FREED');
+          b.remove();
+          r.after();
+        }).catch(err => { b.remove(); this._honest('DELETE FAILED', err); });
+      });
+      main ? main.after(b) : row.appendChild(b);
+    });
+  };
+
   P._comicRowRestore = function (row) {
     Array.prototype.forEach.call(row.querySelectorAll('div,span'), el => {
       if (el.__vCmO != null && el.textContent !== el.__vCmO) el.textContent = el.__vCmO;
@@ -1391,7 +1474,9 @@
     };
     const tiers = (S && S.tiers) || [];
     const models = tiers.map(t => {
-      const installed = !!(S && S.local_ready && S.local_model === t.brand);
+      // per-tier install state is the weights on disk (backend), not just the
+      // last-downloaded model in settings
+      const installed = !!t.installed || !!(S && S.local_ready && S.local_model === t.brand);
       const blocked = t.min_ram_gb > 8;
       const active = installed && S && S.default_chat_mode === 'local';
       const downloading = st.dl.status === 'downloading' && st.dl.tier === t.id;
