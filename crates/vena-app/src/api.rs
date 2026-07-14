@@ -1604,7 +1604,10 @@ impl AppApi {
     }
 
     /// Download a paint tier's GGUF (resumable, SHA-verified from the HF LFS pointer,
-    /// same plumbing as the voice tiers) into models/paint/.
+    /// same plumbing as the voice tiers) into models/paint/. The in-repo filename is
+    /// resolved from the live repo listing — hardcoded names 401 when a repo renames
+    /// its quantizations — while the on-disk name stays the tier's fixed one so
+    /// installed/delete detection keeps working.
     pub fn download_paint_model(
         &self,
         tier: &str,
@@ -1616,23 +1619,8 @@ impl AppApi {
             .ok_or_else(|| VenaError::Other(format!("unknown paint tier {tier}")))?;
         let dir = self.data_dir.join("models/paint");
         std::fs::create_dir_all(&dir)?;
-        let pointer_url = format!("https://huggingface.co/{repo}/raw/main/{file}");
-        let pointer = reqwest::blocking::get(&pointer_url)
-            .and_then(|r| r.text())
-            .map_err(|e| VenaError::Other(format!("fetching LFS pointer: {e}")))?;
-        let expected = pointer
-            .lines()
-            .find_map(|l| l.strip_prefix("oid sha256:"))
-            .map(str::trim)
-            .map(str::to_string);
-        let url = format!("https://huggingface.co/{repo}/resolve/main/{file}?download=true");
-        crate::net::download_file_verified(
-            &url,
-            &dir.join(file),
-            expected.as_deref(),
-            &[],
-            &mut on_progress,
-        )?;
+        let remote = crate::net::hf_pick_gguf(repo, file);
+        crate::net::hf_download(repo, &remote, &dir.join(file), &mut on_progress)?;
         Ok(serde_json::json!({ "brand": brand, "engine_present": sd_cli_present() }))
     }
 

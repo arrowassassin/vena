@@ -1496,7 +1496,8 @@
         cur: installed && !active ? 'pointer' : 'default',
         chipBg: active ? 'var(--cyan)' : 'var(--ink)', chipCol: 'var(--inv)',
         downloading, dlW: (st.dl.pct | 0) + '%', dlPct: st.dl.pct | 0,
-        btnLabel: blocked ? 'TOO BIG' : active ? 'ACTIVE' : installed ? 'ACTIVATE' : downloading ? 'DOWNLOADING…' : 'DOWNLOAD',
+        btnLabel: blocked ? 'TOO BIG' : active ? 'ACTIVE' : installed ? 'ACTIVATE'
+          : downloading ? ((st.dl.pct | 0) >= 99 ? 'VERIFYING…' : 'DOWNLOADING…') : 'DOWNLOAD',
         btnBg: active ? 'var(--cyan)' : 'transparent',
         btnCol: active ? 'var(--inv)' : blocked ? 'var(--mut2)' : 'var(--ink)',
         btnCur: blocked ? 'default' : 'pointer',
@@ -1534,7 +1535,8 @@
         shdw: installed ? '3px 3px 0 var(--cyan)' : '3px 3px 0 var(--shdw)',
         chipBg: installed ? 'var(--cyan)' : 'var(--ink)', chipCol: 'var(--inv)',
         downloading, dlW: (downloading ? pDl.pct | 0 : 0) + '%', dlPct: downloading ? pDl.pct | 0 : 0,
-        btnLabel: installed ? 'INSTALLED ✓' : downloading ? 'DOWNLOADING…' : 'DOWNLOAD',
+        btnLabel: installed ? 'INSTALLED ✓'
+          : downloading ? ((pDl.pct | 0) >= 99 ? 'VERIFYING…' : 'DOWNLOADING…') : 'DOWNLOAD',
         btnAria: t.brand + (installed ? ' — installed' : ' — download'),
         btnBg: 'transparent', btnCol: installed ? 'var(--cyan)' : 'var(--ink)',
         btnCur: installed || downloading ? 'default' : 'pointer',

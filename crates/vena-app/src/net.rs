@@ -26,6 +26,24 @@ fn client() -> &'static reqwest::blocking::Client {
     })
 }
 
+/// Client for multi-GB model downloads. reqwest's `timeout` is a TOTAL request
+/// deadline — with the 60s general client a 4 GB file died mid-stream on any
+/// normal connection. Downloads get a connect guard and NO overall cap; a dead
+/// peer is caught by TCP keepalive, and an interrupted download resumes from
+/// its .part on the next attempt.
+fn dl_client() -> &'static reqwest::blocking::Client {
+    static CLIENT: std::sync::OnceLock<reqwest::blocking::Client> = std::sync::OnceLock::new();
+    CLIENT.get_or_init(|| {
+        reqwest::blocking::Client::builder()
+            .user_agent("vena/0.1 (+https://github.com/arrowassassin/vena)")
+            .connect_timeout(std::time::Duration::from_secs(30))
+            .timeout(None)
+            .tcp_keepalive(std::time::Duration::from_secs(30))
+            .build()
+            .expect("dl client")
+    })
+}
+
 /// RESUMABLE streaming download. Partial data lands in `<dest>.part`; re-invocation
 /// continues with a Range request; the file is renamed into place only when complete
 /// (and, when a digest is supplied, SHA-256-verified).
@@ -47,7 +65,7 @@ pub fn download_file_verified(
     let part = dest.with_extension("part");
     let already: u64 = std::fs::metadata(&part).map(|m| m.len()).unwrap_or(0);
 
-    let mut reqb = client().get(url);
+    let mut reqb = dl_client().get(url);
     if already > 0 {
         reqb = reqb.header("Range", format!("bytes={already}-"));
     }
@@ -57,7 +75,12 @@ pub fn download_file_verified(
     let status = resp.status();
     let resuming = status == reqwest::StatusCode::PARTIAL_CONTENT;
     if !status.is_success() {
-        return Err(VenaError::Other(format!("download HTTP {status}")));
+        let hint = if status.as_u16() == 401 || status.as_u16() == 404 {
+            " — the file isn't at the expected Hugging Face path (the repo may have moved)"
+        } else {
+            ""
+        };
+        return Err(VenaError::Other(format!("download HTTP {status}{hint}")));
     }
     let remaining = resp.content_length().unwrap_or(0);
     let total = if resuming {
@@ -82,12 +105,15 @@ pub fn download_file_verified(
         file.write_all(&buf[..n])?;
         downloaded += n as u64;
         if total > 0 {
-            on_progress(((downloaded * 100) / total).min(99) as u32);
+            // bytes stop at 98 — 99 is the SHA-verify phase (hashing a multi-GB
+            // file takes real time; the UI shows VERIFYING instead of a dead bar)
+            on_progress(((downloaded * 100) / total).min(98) as u32);
         }
     }
     drop(file);
 
     // Integrity gate: verify BEFORE renaming into place / marking ready.
+    on_progress(99);
     if let Some(expected) = expected_sha256 {
         let actual = vena_core::hash::sha256_hex_reader(std::fs::File::open(&part)?)?;
         if !actual.eq_ignore_ascii_case(expected) {
@@ -102,14 +128,53 @@ pub fn download_file_verified(
     Ok(())
 }
 
-/// Download a tier's GGUF from Hugging Face with REAL SHA-256 verification: the
-/// expected digest comes from the model's Git-LFS pointer (`oid sha256:<hex>`,
-/// served at /raw/), the blob downloads resumably, and it is verified before being
-/// renamed into place / marked ready (§11.4 plumbing).
-pub fn download_hf_gguf(model: &str, dir: &Path, on_progress: &mut dyn FnMut(u32)) -> Result<()> {
-    let (repo, file) = hf_repo_file(model)
-        .ok_or_else(|| VenaError::Other(format!("no HF mapping for {model}")))?;
-    let pointer_url = format!("https://huggingface.co/{repo}/raw/main/{file}");
+/// Resolve the actual .gguf filename inside an HF repo. Prefers the exact
+/// `prefer` name when the repo lists it; otherwise falls back through common
+/// quantizations. Repo layouts drift — a hardcoded filename 401s forever,
+/// while the live listing self-corrects. On API failure returns `prefer`
+/// unchanged so a correct hardcoded name still downloads offline-of-the-API.
+pub fn hf_pick_gguf(repo: &str, prefer: &str) -> String {
+    let url = format!("https://huggingface.co/api/models/{repo}");
+    let names: Vec<String> = client()
+        .get(&url)
+        .send()
+        .ok()
+        .and_then(|r| r.json::<serde_json::Value>().ok())
+        .and_then(|v| {
+            v["siblings"].as_array().map(|a| {
+                a.iter()
+                    .filter_map(|s| s["rfilename"].as_str())
+                    .filter(|n| n.ends_with(".gguf") && !n.to_lowercase().contains("vae"))
+                    .map(str::to_string)
+                    .collect()
+            })
+        })
+        .unwrap_or_default();
+    if names.is_empty() || names.iter().any(|n| n == prefer) {
+        return prefer.to_string();
+    }
+    for pat in ["Q8_0", "q8_0", "Q5", "Q4", "f16", "F16"] {
+        if let Some(n) = names.iter().find(|n| n.contains(pat)) {
+            return n.clone();
+        }
+    }
+    names
+        .into_iter()
+        .next()
+        .unwrap_or_else(|| prefer.to_string())
+}
+
+/// Download one HF file with REAL SHA-256 verification: the expected digest
+/// comes from the file's Git-LFS pointer (`oid sha256:<hex>`, served at
+/// /raw/), the blob downloads resumably, and it is verified before being
+/// renamed into place (§11.4 plumbing).
+pub fn hf_download(
+    repo: &str,
+    remote_file: &str,
+    dest: &Path,
+    on_progress: &mut dyn FnMut(u32),
+) -> Result<()> {
+    let pointer_url = format!("https://huggingface.co/{repo}/raw/main/{remote_file}");
     let pointer = client()
         .get(&pointer_url)
         .send()
@@ -120,10 +185,18 @@ pub fn download_hf_gguf(model: &str, dir: &Path, on_progress: &mut dyn FnMut(u32
         .find_map(|l| l.strip_prefix("oid sha256:"))
         .map(str::trim)
         .map(str::to_string);
+    let url = format!("https://huggingface.co/{repo}/resolve/main/{remote_file}?download=true");
+    download_file_verified(&url, dest, expected.as_deref(), &[], on_progress)
+}
 
-    let url = format!("https://huggingface.co/{repo}/resolve/main/{file}?download=true");
+/// Download a tier's GGUF from Hugging Face (§11.4 plumbing). The in-repo
+/// filename is resolved live so quantization renames don't strand the tier.
+pub fn download_hf_gguf(model: &str, dir: &Path, on_progress: &mut dyn FnMut(u32)) -> Result<()> {
+    let (repo, file) = hf_repo_file(model)
+        .ok_or_else(|| VenaError::Other(format!("no HF mapping for {model}")))?;
+    let remote = hf_pick_gguf(repo, file);
     let dest = dir.join(format!("{model}.gguf"));
-    download_file_verified(&url, &dest, expected.as_deref(), &[], on_progress)
+    hf_download(repo, &remote, &dest, on_progress)
 }
 
 /// The shipped Qwen3 family (§11.4). Bartowski GGUF repos are the community default.
