@@ -81,7 +81,29 @@ impl Inference for EmbeddedLlm {
         false
     }
 
+    fn chat(
+        &self,
+        system: &str,
+        turns: &[(String, String)],
+        user: &str,
+        opts: &GenOptions,
+    ) -> Result<String> {
+        self.run(system, turns, user, opts)
+    }
+
     fn complete(&self, system: &str, user: &str, opts: &GenOptions) -> Result<String> {
+        self.run(system, &[], user, opts)
+    }
+}
+
+impl EmbeddedLlm {
+    fn run(
+        &self,
+        system: &str,
+        turns: &[(String, String)],
+        user: &str,
+        opts: &GenOptions,
+    ) -> Result<String> {
         let be = backend()?;
         let mut slot = resident()
             .lock()
@@ -112,7 +134,7 @@ impl Inference for EmbeddedLlm {
         let model = &slot.as_ref().expect("just loaded").model;
 
         // Prompt via the model's own chat template; ChatML as fallback.
-        let prompt = build_prompt(model, system, user);
+        let prompt = build_prompt(model, system, turns, user);
 
         let ctx_params = LlamaContextParams::default()
             .with_n_ctx(NonZeroU32::new(N_CTX))
@@ -149,9 +171,16 @@ impl Inference for EmbeddedLlm {
         let mut sampler = if opts.temperature <= 0.05 {
             LlamaSampler::greedy()
         } else {
+            // seed from the clock — a fixed seed made two identical questions
+            // produce the same reply, which reads as a broken record
             LlamaSampler::chain_simple([
                 LlamaSampler::temp(opts.temperature),
-                LlamaSampler::dist(42),
+                LlamaSampler::dist(
+                    std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map(|d| d.subsec_nanos())
+                        .unwrap_or(42),
+                ),
             ])
         };
 
@@ -183,22 +212,45 @@ impl Inference for EmbeddedLlm {
     }
 }
 
-/// Prefer the GGUF's own chat template; fall back to ChatML (Qwen-native).
-fn build_prompt(model: &LlamaModel, system: &str, user: &str) -> String {
+/// Prefer the GGUF's own chat template — full multi-turn message list, the
+/// way the model was trained to converse; ChatML (Qwen-native) as fallback.
+fn build_prompt(
+    model: &LlamaModel,
+    system: &str,
+    turns: &[(String, String)],
+    user: &str,
+) -> String {
     let msgs = || -> Option<Vec<LlamaChatMessage>> {
-        Some(vec![
-            LlamaChatMessage::new("system".into(), system.into()).ok()?,
-            LlamaChatMessage::new("user".into(), user.into()).ok()?,
-        ])
+        let mut m = vec![LlamaChatMessage::new("system".into(), system.into()).ok()?];
+        for (role, text) in turns {
+            let r = if role == "assistant" {
+                "assistant"
+            } else {
+                "user"
+            };
+            m.push(LlamaChatMessage::new(r.into(), text.clone()).ok()?);
+        }
+        m.push(LlamaChatMessage::new("user".into(), user.into()).ok()?);
+        Some(m)
     };
     if let (Ok(tmpl), Some(m)) = (model.chat_template(None), msgs()) {
         if let Ok(p) = model.apply_chat_template(&tmpl, &m, true) {
             return p;
         }
     }
-    format!(
-        "<|im_start|>system\n{system}<|im_end|>\n<|im_start|>user\n{user}<|im_end|>\n<|im_start|>assistant\n"
-    )
+    let mut p = format!("<|im_start|>system\n{system}<|im_end|>\n");
+    for (role, text) in turns {
+        let r = if role == "assistant" {
+            "assistant"
+        } else {
+            "user"
+        };
+        p.push_str(&format!("<|im_start|>{r}\n{text}<|im_end|>\n"));
+    }
+    p.push_str(&format!(
+        "<|im_start|>user\n{user}<|im_end|>\n<|im_start|>assistant\n"
+    ));
+    p
 }
 
 /// Reasoning-tuned models (Qwen3 included) may open with a <think> block.

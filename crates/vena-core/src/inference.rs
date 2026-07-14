@@ -39,6 +39,31 @@ pub trait Inference: Send + Sync {
     /// "nothing ungated leaves the device" invariant at the call site.
     fn is_remote(&self) -> bool;
     fn complete(&self, system: &str, user: &str, opts: &GenOptions) -> Result<String>;
+    /// Multi-turn chat: `turns` are (role, text) pairs oldest-first with roles
+    /// "user"/"assistant". Backends with native chat formats override this —
+    /// the default flattens into the single-shot prompt so every backend works.
+    fn chat(
+        &self,
+        system: &str,
+        turns: &[(String, String)],
+        user: &str,
+        opts: &GenOptions,
+    ) -> Result<String> {
+        if turns.is_empty() {
+            return self.complete(system, user, opts);
+        }
+        let mut sys = system.to_string();
+        sys.push_str(
+            "\n\n== EARLIER IN THIS CONVERSATION (stay consistent; do not repeat verbatim) ==\n",
+        );
+        for (role, text) in turns {
+            sys.push_str(if role == "user" { "READER: " } else { "YOU: " });
+            let line: String = text.chars().take(400).collect();
+            sys.push_str(&line);
+            sys.push('\n');
+        }
+        self.complete(&sys, user, opts)
+    }
 }
 
 /// Deterministic backend for unit tests and offline Phase-1 CLI runs. Replies are

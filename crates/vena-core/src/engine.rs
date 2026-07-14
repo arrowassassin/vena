@@ -125,20 +125,6 @@ impl Engine {
             system.push_str(m);
             system.push('\n');
         }
-        if !history.is_empty() {
-            system.push_str(
-                "\n\n== EARLIER IN THIS CONVERSATION (already gated when spoken — stay consistent with it, do not repeat it verbatim) ==\n",
-            );
-            for (role, text) in history {
-                let who = if role == "user" { "READER" } else { "YOU" };
-                // cap each replayed line so a long chat can't crowd out the ledger
-                let line: String = text.chars().take(400).collect();
-                system.push_str(who);
-                system.push_str(": ");
-                system.push_str(&line);
-                system.push('\n');
-            }
-        }
 
         // ---- Guard Character Fates: short-circuit before generation ----
         if self.guard_fates && is_fate_question(message) {
@@ -153,10 +139,13 @@ impl Engine {
         }
 
         // ---- STAGE 3: GENERATE ----
+        // History rides as REAL chat turns (native chat template on backends
+        // that have one) — that, not prompt text, is what makes a character
+        // hold a conversation instead of reciting.
         on_stage("compose");
         let draft = self
             .backend
-            .complete(&system, message, &GenOptions::default())?;
+            .chat(&system, history, message, &GenOptions::default())?;
 
         // ---- STAGE 4: VERIFY ----
         on_stage("verify");
@@ -494,6 +483,12 @@ fn assemble_prompt(character: &Option<Character>, progress: i64, visible: &[Fact
                  what you have lived. If asked about things you have not yet lived, respond with \
                  in-character ignorance or curiosity. Never reference narrator knowledge, never \
                  wink at the reader.\n\
+                 You are in CONVERSATION with a reader. Answer their message directly and \
+                 briefly — two to five sentences, in your voice. A greeting gets a greeting. \
+                 Never monologue, never recite your journal unprompted, never ignore what \
+                 they actually said. When they float a theory or an idea, engage with it \
+                 honestly from what you have lived — weigh it, doubt it, add what you saw — \
+                 and feel free to ask them a question back. You are a person, not an oracle.\n\
                  What you know so far:\n{facts}",
                 name = c.name,
                 diction = vc.diction,
@@ -507,6 +502,8 @@ fn assemble_prompt(character: &Option<Character>, progress: i64, visible: &[Fact
             "You are the story's narrator-companion. Discuss ONLY events up to chapter {progress}. \
              Engage with theories using only known evidence; never confirm or deny with certainty \
              anything you have not yet read. Never reference future events.\n\
+             Answer the reader's message directly and briefly — two to five sentences. A \
+             greeting gets a greeting; never monologue past the question.\n\
              What is known so far:\n{facts}",
             progress = progress,
             facts = facts_block
