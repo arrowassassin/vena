@@ -905,12 +905,15 @@
       mk("A−", "Smaller text", function () { self._readerScaleSet(-1); });
       box.__vPct = mk("100%", "Reset text size", function () { self._readerScaleSet(0); });
       mk("A+", "Larger text", function () { self._readerScaleSet(1); });
-      mk("║", "Cycle line spacing", function () { self._readerLineSet(); });
+      box.__vLh = mk("≡", "Cycle line spacing (normal / roomy / airy)", function () { self._readerLineSet(); });
       document.body.appendChild(box);
     }
     box.style.display = "flex";
     var scale = this._readerScale || 1;
     if (box.__vPct) box.__vPct.textContent = Math.round(scale * 100) + "%";
+    if (box.__vLh) {
+      box.__vLh.textContent = this._readerLine === "1.9" ? "≡+" : this._readerLine === "2.15" ? "≡++" : "≡";
+    }
     Array.prototype.forEach.call(ps, function (p) {
       if (p.__venaBaseFs == null) p.__venaBaseFs = parseFloat(window.getComputedStyle(p).fontSize) || 15;
       var wantFs = scale === 1 ? "" : (p.__venaBaseFs * scale).toFixed(1) + "px";

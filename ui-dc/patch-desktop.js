@@ -966,12 +966,16 @@
       mk('A−', 'Smaller text', () => this._readerScaleSet(-1));
       box.__vPct = mk('100%', 'Reset text size', () => this._readerScaleSet(0));
       mk('A+', 'Larger text', () => this._readerScaleSet(1));
-      mk('║', 'Cycle line spacing', () => this._readerLineSet());
+      box.__vLh = mk('≡ LINE', 'Cycle line spacing (normal / roomy / airy)', () => this._readerLineSet());
       document.body.appendChild(box);
     }
     box.style.display = 'flex';
     const scale = this._readerScale || 1;
     if (box.__vPct) box.__vPct.textContent = Math.round(scale * 100) + '%';
+    if (box.__vLh) {
+      // the button says which spacing is active, not just that it exists
+      box.__vLh.textContent = this._readerLine === '1.9' ? '≡ ROOMY' : this._readerLine === '2.15' ? '≡ AIRY' : '≡ LINE';
+    }
     // honest read-time estimate for the open chapter (≈220 wpm)
     if (box.__vEst) {
       const ep = this._vena && this._vena.episode;
