@@ -55,11 +55,13 @@ jobs:
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # stable-diffusion.cpp / llama.cpp use std::filesystem, which the macOS
-          # SDK marks unavailable below 10.15. CMake + cc honor this env var, so the
-          # embedded C++ builds target a modern-enough libc++. No effect off macOS.
-          MACOSX_DEPLOYMENT_TARGET: "11.0"
         with:
+          # macOS deployment target is driven by tauri.conf.json
+          # (bundle.macOS.minimumSystemVersion = 11.0): Tauri exports it as
+          # MACOSX_DEPLOYMENT_TARGET for the whole cargo build, so the embedded
+          # stable-diffusion.cpp / llama.cpp C++ (std::filesystem needs 10.15+)
+          # compiles. Setting the env var here instead does NOT work — Tauri
+          # overrides it from the config.
           projectPath: crates/vena-app
           args: --features tauri --target ${{ matrix.target }}
           tagName: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
