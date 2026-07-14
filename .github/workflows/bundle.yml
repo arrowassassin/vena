@@ -122,7 +122,9 @@ jobs:
         working-directory: crates/vena-app
         env:
           NDK_HOME: ${{ env.NDK_HOME }}
-        run: npx --yes @tauri-apps/cli@^2 android build --apk --target aarch64 --no-default-features --features tauri
+        # `--features tauri` is a native flag (tauri also injects custom-protocol);
+        # `--no-default-features` isn't, so it's passed through to cargo after `--`.
+        run: npx --yes @tauri-apps/cli@^2 android build --apk --target aarch64 --features tauri -- --no-default-features
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
