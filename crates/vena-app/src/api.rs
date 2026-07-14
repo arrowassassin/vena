@@ -1803,7 +1803,10 @@ impl AppApi {
         std::fs::create_dir_all(&dir)?;
         let remote = crate::net::hf_pick_gguf(repo, file);
         crate::net::hf_download(repo, &remote, &dir.join(file), &mut on_progress)?;
-        Ok(serde_json::json!({ "brand": brand, "engine_present": sd_cli_present() }))
+        Ok(serde_json::json!({
+            "brand": brand,
+            "engine_present": cfg!(feature = "embedded-paint") || sd_cli_present(),
+        }))
     }
 
     /// Delete a paint tier's weights (and any half-finished .part). The paint
@@ -1822,6 +1825,108 @@ impl AppApi {
         let _ = std::fs::remove_file(path.with_extension("part"));
         let _ = std::fs::remove_dir(&dir); // only succeeds when empty
         Ok(serde_json::json!({ "deleted": existed, "brand": brand }))
+    }
+
+    /// Whether something better than typographic plates can paint right now:
+    /// a configured relay image endpoint, or local weights with a renderer
+    /// (embedded stable-diffusion.cpp, or the external `sd` CLI).
+    fn has_real_paint(&self) -> bool {
+        let relay = {
+            let store = self.store();
+            self.setting_opt(&store, K_IMAGE_MODEL).is_some()
+        } || self.keystore.get(KC_IMAGE_KEY).ok().flatten().is_some();
+        relay
+            || self
+                .local_paint()
+                .map(|(_, cli)| cli || cfg!(feature = "embedded-paint"))
+                .unwrap_or(false)
+    }
+
+    /// AUTO-PAINT: paint what's missing and refresh what's stale, across the
+    /// whole shelf — covers for every prose book, portraits for met
+    /// characters — through the normal tier chain. Covers refresh after ~8
+    /// chapters of reading, portraits after ~6 (the story moved; so does the
+    /// art). One run at a time; every image stays a stamped ✦ AI overlay.
+    pub fn auto_paint(&self) -> Result<serde_json::Value> {
+        static RUNNING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+        if RUNNING.swap(true, std::sync::atomic::Ordering::SeqCst) {
+            return Ok(serde_json::json!({ "running": true, "covers": 0, "portraits": 0 }));
+        }
+        struct Reset;
+        impl Drop for Reset {
+            fn drop(&mut self) {
+                RUNNING.store(false, std::sync::atomic::Ordering::SeqCst);
+            }
+        }
+        let _reset = Reset;
+
+        let real = self.has_real_paint();
+        let books = self.store().list_books()?;
+        let assets = self.assets_dir()?;
+        let mut covers = 0u32;
+        let mut portraits = 0u32;
+        for b in books.iter().filter(|b| b.profile != "comic") {
+            let progress = self.store().get_progress(b.id)?.0;
+            let png = assets.join(format!("cover-{}.png", b.id)).exists();
+            let svg = assets.join(format!("cover-{}.svg", b.id)).exists();
+            let ckey = format!("cover_painted_ch::{}", b.slug);
+            let painted_at: i64 = {
+                let store = self.store();
+                self.setting_opt(&store, &ckey)
+                    .and_then(|v| v.parse().ok())
+                    .unwrap_or(-1)
+            };
+            let due = (!png && !svg)                                  // nothing at all
+                || (real && !png && painted_at < progress)             // typographic → painted: one try per bookmark
+                || (real && painted_at >= 0 && progress - painted_at >= 8); // stale: story moved on
+            if due && self.generate_cover(b.id, png, |_| {}).is_ok() {
+                covers += 1;
+                let _ = self.store().set_setting(&ckey, &progress.to_string());
+            }
+            if !real {
+                continue; // portraits stay lazy typographic plates until paint exists
+            }
+            for c in self
+                .list_characters(b.id)?
+                .into_iter()
+                .filter(|c| c.met)
+                .take(6)
+            {
+                let pkey = format!("portrait_painted_ch::{}::{}", b.slug, c.id);
+                let at: i64 = {
+                    let store = self.store();
+                    self.setting_opt(&store, &pkey)
+                        .and_then(|v| v.parse().ok())
+                        .unwrap_or(-1)
+                };
+                if (at < 0 || progress - at >= 6)
+                    && self.generate_portrait(b.id, c.id, |_| {}).is_ok()
+                {
+                    portraits += 1;
+                    let _ = self.store().set_setting(&pkey, &progress.to_string());
+                }
+            }
+        }
+        Ok(serde_json::json!({ "covers": covers, "portraits": portraits, "running": false }))
+    }
+
+    /// Serve a generated asset to the UI as base64. STRICTLY confined to the
+    /// profile's assets dir — no other path ever leaves this function.
+    pub fn get_asset(&self, path: &str) -> Result<serde_json::Value> {
+        let assets = self.assets_dir()?.canonicalize()?;
+        let p = std::path::Path::new(path)
+            .canonicalize()
+            .map_err(|_| VenaError::NotFound("asset not found".into()))?;
+        if !p.starts_with(&assets) {
+            return Err(VenaError::Other("asset outside the assets dir".into()));
+        }
+        let bytes = std::fs::read(&p)?;
+        let mime = if p.extension().and_then(|x| x.to_str()) == Some("svg") {
+            "image/svg+xml"
+        } else {
+            "image/png"
+        };
+        Ok(serde_json::json!({ "mime": mime, "data": base64_encode(&bytes) }))
     }
 
     fn installed_paint_model(&self) -> Option<String> {
@@ -1899,13 +2004,19 @@ impl AppApi {
 }
 
 fn sd_cli_present() -> bool {
-    // stable-diffusion.cpp ships the `sd` CLI; PATH probe keeps this dependency-free.
+    // stable-diffusion.cpp ships an `sd` CLI — but so does a popular
+    // find-and-replace tool. Only help text that talks about diffusion counts.
     std::process::Command::new("sd")
         .arg("--help")
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .map(|s| s.success() || s.code().is_some())
+        .output()
+        .map(|o| {
+            let text = format!(
+                "{}{}",
+                String::from_utf8_lossy(&o.stdout),
+                String::from_utf8_lossy(&o.stderr)
+            );
+            text.contains("diffusion") || text.contains("cfg-scale")
+        })
         .unwrap_or(false)
 }
 

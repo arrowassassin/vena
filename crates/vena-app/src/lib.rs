@@ -4,10 +4,13 @@
 //! a thin set of `#[tauri::command]` wrappers over `AppApi`.
 
 pub mod api;
+pub mod gguf;
 pub mod images;
 pub mod keystore;
 #[cfg(feature = "embedded-llm")]
 pub mod local_llm;
+#[cfg(feature = "embedded-paint")]
+pub mod local_paint;
 pub mod net;
 
 pub use api::AppApi;

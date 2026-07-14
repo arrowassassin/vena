@@ -188,6 +188,12 @@
     V.call("get_image_status").then(function (is) { self._imageStatus = is; self.forceUpdate(); }).catch(function () {});
     V.call("paint_tiers").then(function (ts) { self._paintTiers = ts || []; self.forceUpdate(); }).catch(function () {});
     V.call("relay_presets").then(function (ps) { self._relayPresets = ps || []; self.forceUpdate(); }).catch(function () {});
+    if (!this._autoPainted) {
+      this._autoPainted = true;
+      V.call("auto_paint").then(function (r) {
+        if (r && (r.covers || r.portraits)) self._toast("PAINTED " + r.covers + " COVERS · " + r.portraits + " PORTRAITS — STAMPED ✦ AI");
+      }).catch(function () {});
+    }
     this._refreshAi();
   };
 
@@ -461,6 +467,9 @@
         : ((r && r.brand) || "PAINT MODEL") + " INSTALLED — READY TO PAINT");
       V.call("paint_tiers").then(function (ts) { self._paintTiers = ts || []; self.forceUpdate(); }).catch(function () {});
       V.call("get_image_status").then(function (is) { self._imageStatus = is; self.forceUpdate(); }).catch(function () {});
+      V.call("auto_paint").then(function (r) {
+        if (r && (r.covers || r.portraits)) self._toast("PAINTED " + r.covers + " COVERS · " + r.portraits + " PORTRAITS — STAMPED ✦ AI");
+      }).catch(function () {});
     }).catch(function (e) {
       self._paintDlBusy = false;
       self.setState({ paintDl: { status: "idle", pct: 0 } });

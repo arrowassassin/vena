@@ -156,6 +156,20 @@ impl AppApi {
         let Some((model, engine)) = self.local_paint() else {
             return Ok(None);
         };
+        // Tier 2a: the EMBEDDED renderer (stable-diffusion.cpp compiled in) —
+        // downloaded weights paint with no CLI. Failures fall through honestly.
+        #[cfg(feature = "embedded-paint")]
+        {
+            let tmp = self.assets_dir()?.join(".paint-tmp.png");
+            match crate::local_paint::render(&model, prompt, w, h, &tmp) {
+                Ok(()) => {
+                    let bytes = std::fs::read(&tmp)?;
+                    let _ = std::fs::remove_file(&tmp);
+                    return Ok(Some(bytes));
+                }
+                Err(e) => tracing::warn!("embedded paint failed, trying CLI: {e}"),
+            }
+        }
         if !engine {
             return Ok(None); // weights downloaded, engine missing — status reports it
         }

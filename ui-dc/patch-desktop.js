@@ -105,6 +105,10 @@
       if (Object.keys(this.state.chats || {}).length) this.setState({ chats: {} });
     }
     if (this.state.chatOpen) this._loadChatHistory(this.state.char);
+    if (this.state.book && this._artBook !== this.state.book && (this.fullCast || []).length) {
+      this._artBook = this.state.book;
+      this._loadArt();
+    }
     // remember where the reader is so the next launch opens right there —
     // but never before the boot restore has read the previous values
     if (this._navRestored) {
@@ -131,6 +135,7 @@
     };
     this._manga = null;
     this._turnSeq = 0;
+    this.artMap = {}; this.coverArt = {}; this._artBusy = {};
     // device reading prefs (type size / spacing) — restored across launches
     try {
       this._readerScale = parseFloat(localStorage.getItem('vena_reader_scale')) || 1;
@@ -185,11 +190,48 @@
     }).catch(e => this._honest('SHELF UNREACHABLE', e));
 
     this._loadSettings();
+    this._autoPaint(); // covers + portraits, whatever tier can paint
     // one-tap relay presets (§ configure_relay) — pre-fill base+model per provider
     V.call('relay_presets').then(ps => { this._vena.relayPresets = ps || []; this.setState({}); }).catch(() => {});
     // the store's network sources are probed on first visit to THE STORE —
     // real calls that may honestly fail, so they are not fired at boot
     this._storeLoaded = false;
+  };
+
+  /* auto-paint: paint missing art, refresh stale art (the story moved, so
+   * does the paint). Fire-and-forget; honest toast only when something new. */
+  P._autoPaint = function () {
+    V.call('auto_paint').then(r => {
+      if (!r || (!r.covers && !r.portraits)) return;
+      this._toast('PAINTED ' + r.covers + ' COVER' + (r.covers === 1 ? '' : 'S')
+        + ' · ' + r.portraits + ' PORTRAIT' + (r.portraits === 1 ? '' : 'S') + ' — STAMPED ✦ AI');
+      this._artBook = null; this.artMap = {}; this.coverArt = {}; this._artBusy = {};
+      this._refreshBooks();
+    }).catch(() => {});
+  };
+
+  /* pull the current book's painted art into the UI: cover + met-cast
+   * portraits (cached server-side; instant when already painted) */
+  P._loadArt = function () {
+    const meta = this._curBookMeta();
+    if (!meta) return;
+    const asUrl = a => 'url(data:' + a.mime + ';base64,' + a.data + ') center/cover';
+    V.call('generate_cover', { bookId: meta.id, regenerate: false }).then(p => {
+      if (!p || !/\.png$/.test(String(p))) return null;
+      return V.call('get_asset', { path: p }).then(a => {
+        this.coverArt[meta.slug] = asUrl(a);
+        this.setState({});
+      });
+    }).catch(() => {});
+    (this.fullCast || []).filter(c => c.met).slice(0, 8).forEach(c => {
+      const k = keyOf(c.name);
+      if (this.artMap[k] || this._artBusy[k]) return;
+      this._artBusy[k] = 1;
+      V.call('generate_portrait', { bookId: meta.id, characterId: c.id })
+        .then(p => V.call('get_asset', { path: p }))
+        .then(a => { this.artMap[k] = asUrl(a); this.setState({}); })
+        .catch(() => {});
+    });
   };
 
   P._loadSettings = function () {
@@ -558,6 +600,7 @@
         ? 'WEIGHTS INSTALLED — ALSO INSTALL stable-diffusion.cpp (sd CLI) TO PAINT LOCALLY'
         : ((r && r.brand) || 'PAINT MODEL') + ' INSTALLED — READY TO PAINT');
       this._loadPaint();
+      this._autoPaint();
     }).catch(e => {
       this._paintDlBusy = false;
       this.setState({ paintDl: { status: 'idle', pct: 0 } });
@@ -1608,7 +1651,8 @@
       };
       const sealed = b.status === 'forged' || b.status === 'fresh';
       const card = {
-        id: b.id, title: b.title, author: b.author, cover: b.cover,
+        id: b.id, title: b.title, author: b.author,
+        cover: (this.coverArt || {})[b.id] || b.cover,
         badge: sealed ? 'LEDGER FORGED ✓' : forging ? 'FORGING…' : 'RAW EPUB',
         badgeBg: forging ? 'var(--red)' : 'transparent',
         badgeCol: sealed ? 'var(--cyan)' : forging ? '#fff' : 'var(--mut)',

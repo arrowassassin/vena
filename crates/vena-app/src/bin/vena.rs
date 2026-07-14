@@ -532,6 +532,16 @@ fn paint_tiers(api: State<'_, Api>) -> Result<serde_json::Value, VenaError> {
 }
 
 #[tauri::command]
+fn auto_paint(api: State<'_, Api>) -> Result<serde_json::Value, VenaError> {
+    api.auto_paint()
+}
+
+#[tauri::command]
+fn get_asset(api: State<'_, Api>, path: String) -> Result<serde_json::Value, VenaError> {
+    api.get_asset(&path)
+}
+
+#[tauri::command]
 fn cancel_model_download(
     api: State<'_, Api>,
     kind: String,
@@ -682,6 +692,8 @@ fn main() {
             get_image_status,
             paint_tiers,
             download_paint_model,
+            auto_paint,
+            get_asset,
             cancel_model_download,
             delete_local_model,
             delete_paint_model,

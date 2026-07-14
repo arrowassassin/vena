@@ -23,10 +23,12 @@ name = "vena-devserver"
 path = "src/bin/devserver.rs"
 
 [features]
-default = ["embedded-llm"]
+default = ["embedded-llm", "embedded-paint"]
 # In-process llama.cpp: downloaded GGUF tiers speak with NO external server.
 # Off-switch kept for constrained build environments (cmake + C++ required).
 embedded-llm = ["dep:llama-cpp-2"]
+# In-process stable-diffusion.cpp: downloaded paint tiers render with NO CLI.
+embedded-paint = ["dep:diffusion-rs"]
 tauri = ["dep:tauri", "dep:tauri-plugin-dialog", "dep:tauri-plugin-notification", "dep:keyring", "dep:tauri-build"]
 
 [dependencies]
@@ -42,6 +44,7 @@ tiny_http = "0.12"
 sha2 = { workspace = true }
 
 llama-cpp-2 = { version = "0.1", optional = true }
+diffusion-rs = { version = "0.1", optional = true }
 
 # Tauri-only (optional; enabled by the `tauri` feature).
 tauri = { version = "2", features = [], optional = true }
@@ -53,6 +56,7 @@ encoding_rs = "0.8.35"
 # Apple GPUs: offload to Metal (no effect elsewhere).
 [target.'cfg(target_os = "macos")'.dependencies]
 llama-cpp-2 = { version = "0.1", optional = true, features = ["metal"] }
+diffusion-rs = { version = "0.1", optional = true, features = ["metal"] }
 
 [build-dependencies]
 tauri-build = { version = "2", optional = true }

@@ -95,6 +95,9 @@ impl Inference for EmbeddedLlm {
                     self.path.display()
                 )));
             }
+            // llama.cpp can crash on malformed files — refuse non-GGUF up front
+            crate::gguf::assert_gguf(&self.path)
+                .map_err(|e| VenaError::Inference(e.to_string()))?;
             let mut params = LlamaModelParams::default();
             if cfg!(target_os = "macos") {
                 params = params.with_n_gpu_layers(1_000_000); // Metal: offload everything
