@@ -174,6 +174,11 @@ impl EmbeddedLlm {
             // seed from the clock — a fixed seed made two identical questions
             // produce the same reply, which reads as a broken record
             LlamaSampler::chain_simple([
+                // Small models parrot their own recent phrasing ("the silence
+                // presses against my ears" every turn) — a mild repeat penalty
+                // over the last window pushes them to vary the wording.
+                LlamaSampler::penalties(256, 1.12, 0.0, 0.0),
+                LlamaSampler::min_p(0.05, 1),
                 LlamaSampler::temp(opts.temperature),
                 LlamaSampler::dist(
                     std::time::SystemTime::now()
@@ -220,8 +225,14 @@ fn build_prompt(
     turns: &[(String, String)],
     user: &str,
 ) -> String {
+    // Qwen3's hybrid-reasoning tiers THINK by default: hundreds of <think>
+    // tokens generated (slowly, on-device) and then thrown away by
+    // strip_reasoning — the single biggest source of minute-long turns. The
+    // documented `/no_think` soft switch in the system prompt disables it;
+    // non-Qwen models ignore the token.
+    let system = format!("{system} /no_think");
     let msgs = || -> Option<Vec<LlamaChatMessage>> {
-        let mut m = vec![LlamaChatMessage::new("system".into(), system.into()).ok()?];
+        let mut m = vec![LlamaChatMessage::new("system".into(), system.clone()).ok()?];
         for (role, text) in turns {
             let r = if role == "assistant" {
                 "assistant"

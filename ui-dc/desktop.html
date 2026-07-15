@@ -2907,6 +2907,12 @@ class Component extends DCLogic {
    * does the paint). Fire-and-forget; honest toast only when something new. */
   P._autoPaint = function () {
     V.call('auto_paint').then(r => {
+      if (r && r.error && !r.covers && !r.portraits) {
+        // a paint tier is installed but the renderer failed — say WHY instead
+        // of leaving typographic plates under an INSTALLED ✓ badge
+        this._toast('PAINT ENGINE FAILED — ' + String(r.error).slice(0, 120));
+        return;
+      }
       if (!r || (!r.covers && !r.portraits)) return;
       this._toast('PAINTED ' + r.covers + ' COVER' + (r.covers === 1 ? '' : 'S')
         + ' · ' + r.portraits + ' PORTRAIT' + (r.portraits === 1 ? '' : 'S') + ' — STAMPED ✦ AI');
@@ -3298,6 +3304,25 @@ class Component extends DCLogic {
     });
   };
 
+  /* keep the chat thread pinned to the newest message. The scrollable column
+   * carries no id in the canonical design, but it is always the parent of the
+   * "EVERY REPLY GATED" pill — find it by that landmark. Best-effort. */
+  P._scrollChat = function () {
+    requestAnimationFrame(() => {
+      try {
+        const divs = document.querySelectorAll('div');
+        for (let i = 0; i < divs.length; i++) {
+          const d = divs[i];
+          if (d.childElementCount === 0 && (d.textContent || '').indexOf('EVERY REPLY GATED') === 0) {
+            const sc = d.parentElement;
+            if (sc) sc.scrollTop = sc.scrollHeight;
+            return;
+          }
+        }
+      } catch (e) { /* scrolling is cosmetic — never break the turn */ }
+    });
+  };
+
   /* ---------------- companion: the real 5-stage engine ---------------- */
   P._send = function (forcedText) {
     const st = this.state;
@@ -3315,6 +3340,7 @@ class Component extends DCLogic {
     const turnId = ++this._turnSeq;
     this._turnId = turnId;
     this.setState({ chats, input: '', phase: 'gate', stream: '' });
+    this._scrollChat();
     const cid = typeof charId === 'number' ? charId : null;
     V.call('companion_turn', { bookId: meta.id, characterId: cid, message: text, turnId })
       .then(rep => {
@@ -3325,6 +3351,7 @@ class Component extends DCLogic {
         c2[charId] = l2;
         this._busy = false;
         this.setState({ chats: c2, phase: null, stream: '' });
+        this._scrollChat();
         if (rep.redacted) this._toast('A LINE WAS INKED OUT — THE GATE HELD');
       })
       .catch(e => {
@@ -3786,12 +3813,31 @@ class Component extends DCLogic {
     const ps = root ? root.querySelectorAll('p') : [];
     // only over an open chapter — not the fresh-ledger / forging empty states
     if (this.state.screen !== 'reader' || !ps.length) { if (box) box.style.display = 'none'; return; }
-    if (!box) {
+    // The theme variables (--ink/--panel/…) are scoped to .vhub[data-vtheme];
+    // a body-appended overlay resolves NONE of them — invisible in dark. The
+    // controls must live INSIDE the themed root, and they sit top-right as a
+    // compact Aa toggle that opens the size/spacing panel.
+    if (box && box.parentElement !== root) { box.remove(); box = null; }
+    if (!box && root) {
       box = document.createElement('div');
       box.setAttribute('data-vena-type', '1');
-      box.setAttribute('role', 'group');
-      box.setAttribute('aria-label', 'Text size and line spacing');
-      box.style.cssText = 'position:fixed;right:18px;bottom:18px;z-index:80;display:flex;gap:6px;background:var(--panel);border:2.5px solid var(--ink);box-shadow:4px 4px 0 var(--shdw);padding:6px';
+      box.style.cssText = 'position:absolute;right:18px;top:70px;z-index:80;display:flex;flex-direction:column;align-items:flex-end;gap:6px';
+      const tgl = document.createElement('button');
+      tgl.textContent = 'Aa';
+      tgl.title = 'Text size & line spacing';
+      tgl.setAttribute('aria-label', 'Text size and line spacing');
+      tgl.setAttribute('aria-expanded', 'false');
+      tgl.style.cssText = "background:var(--panel);border:2.5px solid var(--ink);color:var(--ink);min-width:40px;min-height:40px;font-family:'IBM Plex Mono',monospace;font-size:14px;font-weight:700;cursor:pointer;box-shadow:4px 4px 0 var(--shdw)";
+      tgl.addEventListener('click', () => {
+        this._typeOpen = !this._typeOpen;
+        tgl.setAttribute('aria-expanded', this._typeOpen ? 'true' : 'false');
+        this._venaReaderA11y();
+      });
+      box.appendChild(tgl);
+      const panel = document.createElement('div');
+      panel.setAttribute('role', 'group');
+      panel.setAttribute('aria-label', 'Text size and line spacing controls');
+      panel.style.cssText = 'display:none;gap:6px;background:var(--panel);border:2.5px solid var(--ink);box-shadow:4px 4px 0 var(--shdw);padding:6px';
       const mk = (label, aria, fn) => {
         const b = document.createElement('button');
         b.textContent = label;
@@ -3799,20 +3845,36 @@ class Component extends DCLogic {
         b.setAttribute('aria-label', aria);
         b.style.cssText = "background:none;border:2px solid var(--ink);color:var(--ink);min-width:36px;min-height:36px;font-family:'IBM Plex Mono',monospace;font-size:11px;font-weight:700;cursor:pointer";
         b.addEventListener('click', fn);
-        box.appendChild(b);
+        panel.appendChild(b);
         return b;
       };
-      const est = document.createElement('span');
-      est.style.cssText = "align-self:center;font-family:'IBM Plex Mono',monospace;font-size:8px;letter-spacing:.08em;color:var(--mut2);padding:0 6px";
-      box.appendChild(est);
-      box.__vEst = est;
       mk('A−', 'Smaller text', () => this._readerScaleSet(-1));
       box.__vPct = mk('100%', 'Reset text size', () => this._readerScaleSet(0));
       mk('A+', 'Larger text', () => this._readerScaleSet(1));
       box.__vLh = mk('≡ LINE', 'Cycle line spacing (normal / roomy / airy)', () => this._readerLineSet());
-      document.body.appendChild(box);
+      const est = document.createElement('span');
+      est.style.cssText = "align-self:center;font-family:'IBM Plex Mono',monospace;font-size:8px;letter-spacing:.08em;color:var(--mut2);padding:0 6px";
+      panel.appendChild(est);
+      box.__vEst = est;
+      box.__vPanel = panel;
+      box.appendChild(panel);
+      root.appendChild(box);
     }
+    if (!box) return;
     box.style.display = 'flex';
+    if (box.__vPanel) box.__vPanel.style.display = this._typeOpen ? 'flex' : 'none';
+    // the canonical reader toolbar ships its own (decorative) Aa button —
+    // wire it to the same panel so it isn't a dead control
+    Array.prototype.forEach.call(root.querySelectorAll('button,div'), el => {
+      if (el.__vWired || box.contains(el) || (el.textContent || '').trim() !== 'Aa') return;
+      if (el.querySelector && el.querySelector('*') && el.tagName !== 'BUTTON') return;
+      el.__vWired = true;
+      el.style.cursor = 'pointer';
+      el.addEventListener('click', () => {
+        this._typeOpen = !this._typeOpen;
+        this._venaReaderA11y();
+      });
+    });
     const scale = this._readerScale || 1;
     if (box.__vPct) box.__vPct.textContent = Math.round(scale * 100) + '%';
     if (box.__vLh) {
@@ -4346,6 +4408,7 @@ class Component extends DCLogic {
         chats[charId] = items.concat(chats[charId] || []);
         return { chats };
       });
+      this._scrollChat();
     }).catch(() => { this._histLoaded[key] = false; });
   };
 
