@@ -3813,12 +3813,31 @@ class Component extends DCLogic {
     const ps = root ? root.querySelectorAll('p') : [];
     // only over an open chapter — not the fresh-ledger / forging empty states
     if (this.state.screen !== 'reader' || !ps.length) { if (box) box.style.display = 'none'; return; }
-    if (!box) {
+    // The theme variables (--ink/--panel/…) are scoped to .vhub[data-vtheme];
+    // a body-appended overlay resolves NONE of them — invisible in dark. The
+    // controls must live INSIDE the themed root, and they sit top-right as a
+    // compact Aa toggle that opens the size/spacing panel.
+    if (box && box.parentElement !== root) { box.remove(); box = null; }
+    if (!box && root) {
       box = document.createElement('div');
       box.setAttribute('data-vena-type', '1');
-      box.setAttribute('role', 'group');
-      box.setAttribute('aria-label', 'Text size and line spacing');
-      box.style.cssText = 'position:fixed;right:18px;bottom:18px;z-index:80;display:flex;gap:6px;background:var(--panel);border:2.5px solid var(--ink);box-shadow:4px 4px 0 var(--shdw);padding:6px';
+      box.style.cssText = 'position:absolute;right:18px;top:70px;z-index:80;display:flex;flex-direction:column;align-items:flex-end;gap:6px';
+      const tgl = document.createElement('button');
+      tgl.textContent = 'Aa';
+      tgl.title = 'Text size & line spacing';
+      tgl.setAttribute('aria-label', 'Text size and line spacing');
+      tgl.setAttribute('aria-expanded', 'false');
+      tgl.style.cssText = "background:var(--panel);border:2.5px solid var(--ink);color:var(--ink);min-width:40px;min-height:40px;font-family:'IBM Plex Mono',monospace;font-size:14px;font-weight:700;cursor:pointer;box-shadow:4px 4px 0 var(--shdw)";
+      tgl.addEventListener('click', () => {
+        this._typeOpen = !this._typeOpen;
+        tgl.setAttribute('aria-expanded', this._typeOpen ? 'true' : 'false');
+        this._venaReaderA11y();
+      });
+      box.appendChild(tgl);
+      const panel = document.createElement('div');
+      panel.setAttribute('role', 'group');
+      panel.setAttribute('aria-label', 'Text size and line spacing controls');
+      panel.style.cssText = 'display:none;gap:6px;background:var(--panel);border:2.5px solid var(--ink);box-shadow:4px 4px 0 var(--shdw);padding:6px';
       const mk = (label, aria, fn) => {
         const b = document.createElement('button');
         b.textContent = label;
@@ -3826,20 +3845,36 @@ class Component extends DCLogic {
         b.setAttribute('aria-label', aria);
         b.style.cssText = "background:none;border:2px solid var(--ink);color:var(--ink);min-width:36px;min-height:36px;font-family:'IBM Plex Mono',monospace;font-size:11px;font-weight:700;cursor:pointer";
         b.addEventListener('click', fn);
-        box.appendChild(b);
+        panel.appendChild(b);
         return b;
       };
-      const est = document.createElement('span');
-      est.style.cssText = "align-self:center;font-family:'IBM Plex Mono',monospace;font-size:8px;letter-spacing:.08em;color:var(--mut2);padding:0 6px";
-      box.appendChild(est);
-      box.__vEst = est;
       mk('A−', 'Smaller text', () => this._readerScaleSet(-1));
       box.__vPct = mk('100%', 'Reset text size', () => this._readerScaleSet(0));
       mk('A+', 'Larger text', () => this._readerScaleSet(1));
       box.__vLh = mk('≡ LINE', 'Cycle line spacing (normal / roomy / airy)', () => this._readerLineSet());
-      document.body.appendChild(box);
+      const est = document.createElement('span');
+      est.style.cssText = "align-self:center;font-family:'IBM Plex Mono',monospace;font-size:8px;letter-spacing:.08em;color:var(--mut2);padding:0 6px";
+      panel.appendChild(est);
+      box.__vEst = est;
+      box.__vPanel = panel;
+      box.appendChild(panel);
+      root.appendChild(box);
     }
+    if (!box) return;
     box.style.display = 'flex';
+    if (box.__vPanel) box.__vPanel.style.display = this._typeOpen ? 'flex' : 'none';
+    // the canonical reader toolbar ships its own (decorative) Aa button —
+    // wire it to the same panel so it isn't a dead control
+    Array.prototype.forEach.call(root.querySelectorAll('button,div'), el => {
+      if (el.__vWired || box.contains(el) || (el.textContent || '').trim() !== 'Aa') return;
+      if (el.querySelector && el.querySelector('*') && el.tagName !== 'BUTTON') return;
+      el.__vWired = true;
+      el.style.cursor = 'pointer';
+      el.addEventListener('click', () => {
+        this._typeOpen = !this._typeOpen;
+        this._venaReaderA11y();
+      });
+    });
     const scale = this._readerScale || 1;
     if (box.__vPct) box.__vPct.textContent = Math.round(scale * 100) + '%';
     if (box.__vLh) {

@@ -3295,31 +3295,56 @@ class Component extends DCLogic {
   P._applyReaderA11y = function () {
     var self = this;
     var box = document.querySelector("[data-vena-type]");
+    var root = document.querySelector(".vhub");
     var ps = document.querySelectorAll(".vhub p");
     // only over an open chapter — not the fresh-ledger / forging empty states
     if (this.state.screen !== "reader" || !ps.length) { if (box) box.style.display = "none"; return; }
-    if (!box) {
+    // Theme vars are scoped to .vhub[data-vtheme] — a body-appended overlay
+    // resolves none of them (invisible in dark). Live INSIDE the themed root,
+    // as a compact Aa toggle at the top right that opens the controls.
+    if (box && box.parentElement !== root) {
+      if (box.parentElement) box.parentElement.removeChild(box);
+      box = null;
+    }
+    if (!box && root) {
       box = document.createElement("div");
       box.setAttribute("data-vena-type", "1");
-      box.setAttribute("role", "group");
-      box.setAttribute("aria-label", "Text size and line spacing");
-      box.style.cssText = "position:fixed;right:10px;bottom:96px;z-index:80;display:flex;gap:5px;background:var(--panel);border:2.5px solid var(--ink);box-shadow:3px 3px 0 var(--shdw);padding:5px";
+      box.style.cssText = "position:absolute;right:10px;top:64px;z-index:80;display:flex;flex-direction:column;align-items:flex-end;gap:5px";
+      var tgl = document.createElement("button");
+      tgl.textContent = "Aa";
+      tgl.setAttribute("aria-label", "Text size and line spacing");
+      tgl.setAttribute("aria-expanded", "false");
+      tgl.style.cssText = "background:var(--panel);border:2.5px solid var(--ink);color:var(--ink);min-width:42px;min-height:42px;font-family:'IBM Plex Mono',monospace;font-size:14px;font-weight:700;cursor:pointer;box-shadow:3px 3px 0 var(--shdw)";
+      tgl.addEventListener("click", function () {
+        self._typeOpen = !self._typeOpen;
+        tgl.setAttribute("aria-expanded", self._typeOpen ? "true" : "false");
+        self._applyReaderA11y();
+      });
+      box.appendChild(tgl);
+      var panel = document.createElement("div");
+      panel.setAttribute("role", "group");
+      panel.setAttribute("aria-label", "Text size and line spacing controls");
+      panel.style.cssText = "display:none;gap:5px;background:var(--panel);border:2.5px solid var(--ink);box-shadow:3px 3px 0 var(--shdw);padding:5px";
       var mk = function (label, aria, fn) {
         var b = document.createElement("button");
         b.textContent = label;
         b.setAttribute("aria-label", aria);
         b.style.cssText = "background:none;border:2px solid var(--ink);color:var(--ink);min-width:40px;min-height:40px;font-family:'IBM Plex Mono',monospace;font-size:12px;font-weight:700;cursor:pointer";
         b.addEventListener("click", fn);
-        box.appendChild(b);
+        panel.appendChild(b);
         return b;
       };
       mk("A−", "Smaller text", function () { self._readerScaleSet(-1); });
       box.__vPct = mk("100%", "Reset text size", function () { self._readerScaleSet(0); });
       mk("A+", "Larger text", function () { self._readerScaleSet(1); });
       box.__vLh = mk("≡", "Cycle line spacing (normal / roomy / airy)", function () { self._readerLineSet(); });
-      document.body.appendChild(box);
+      box.__vPanel = panel;
+      box.appendChild(panel);
+      root.appendChild(box);
     }
+    if (!box) return;
     box.style.display = "flex";
+    if (box.__vPanel) box.__vPanel.style.display = self._typeOpen ? "flex" : "none";
     var scale = this._readerScale || 1;
     if (box.__vPct) box.__vPct.textContent = Math.round(scale * 100) + "%";
     if (box.__vLh) {
