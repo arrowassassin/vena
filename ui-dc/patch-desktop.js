@@ -203,6 +203,12 @@
    * does the paint). Fire-and-forget; honest toast only when something new. */
   P._autoPaint = function () {
     V.call('auto_paint').then(r => {
+      if (r && r.error && !r.covers && !r.portraits) {
+        // a paint tier is installed but the renderer failed — say WHY instead
+        // of leaving typographic plates under an INSTALLED ✓ badge
+        this._toast('PAINT ENGINE FAILED — ' + String(r.error).slice(0, 120));
+        return;
+      }
       if (!r || (!r.covers && !r.portraits)) return;
       this._toast('PAINTED ' + r.covers + ' COVER' + (r.covers === 1 ? '' : 'S')
         + ' · ' + r.portraits + ' PORTRAIT' + (r.portraits === 1 ? '' : 'S') + ' — STAMPED ✦ AI');
@@ -594,6 +600,25 @@
     });
   };
 
+  /* keep the chat thread pinned to the newest message. The scrollable column
+   * carries no id in the canonical design, but it is always the parent of the
+   * "EVERY REPLY GATED" pill — find it by that landmark. Best-effort. */
+  P._scrollChat = function () {
+    requestAnimationFrame(() => {
+      try {
+        const divs = document.querySelectorAll('div');
+        for (let i = 0; i < divs.length; i++) {
+          const d = divs[i];
+          if (d.childElementCount === 0 && (d.textContent || '').indexOf('EVERY REPLY GATED') === 0) {
+            const sc = d.parentElement;
+            if (sc) sc.scrollTop = sc.scrollHeight;
+            return;
+          }
+        }
+      } catch (e) { /* scrolling is cosmetic — never break the turn */ }
+    });
+  };
+
   /* ---------------- companion: the real 5-stage engine ---------------- */
   P._send = function (forcedText) {
     const st = this.state;
@@ -611,6 +636,7 @@
     const turnId = ++this._turnSeq;
     this._turnId = turnId;
     this.setState({ chats, input: '', phase: 'gate', stream: '' });
+    this._scrollChat();
     const cid = typeof charId === 'number' ? charId : null;
     V.call('companion_turn', { bookId: meta.id, characterId: cid, message: text, turnId })
       .then(rep => {
@@ -621,6 +647,7 @@
         c2[charId] = l2;
         this._busy = false;
         this.setState({ chats: c2, phase: null, stream: '' });
+        this._scrollChat();
         if (rep.redacted) this._toast('A LINE WAS INKED OUT — THE GATE HELD');
       })
       .catch(e => {
@@ -1642,6 +1669,7 @@
         chats[charId] = items.concat(chats[charId] || []);
         return { chats };
       });
+      this._scrollChat();
     }).catch(() => { this._histLoaded[key] = false; });
   };
 

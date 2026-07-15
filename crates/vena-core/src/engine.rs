@@ -153,10 +153,15 @@ impl Engine {
         // History rides as REAL chat turns (native chat template on backends
         // that have one) — that, not prompt text, is what makes a character
         // hold a conversation instead of reciting.
+        // Chat replies are capped well below the default 512: the prompt asks
+        // for 1–5 sentences, and on a local 7B every surplus token is latency.
         on_stage("compose");
-        let draft = self
-            .backend
-            .chat(&system, history, message, &GenOptions::default())?;
+        let chat_opts = GenOptions {
+            max_tokens: 256,
+            temperature: 0.8,
+            json: false,
+        };
+        let draft = self.backend.chat(&system, history, message, &chat_opts)?;
 
         // ---- STAGE 4: VERIFY ----
         on_stage("verify");
@@ -491,17 +496,23 @@ fn assemble_prompt(character: &Option<Character>, progress: i64, visible: &[Fact
             let vc = &c.voice_card;
             format!(
                 "You are {name}. Diction: {diction}. Temperament: {temperament}. \
-                 A sample of your voice: \"{sample}\".\n\
+                 A sample of your voice (for TONE only — never quote it, never reuse its \
+                 imagery): \"{sample}\".\n\
                  You exist at chapter {progress} — this moment is your present. You know ONLY \
                  what you have lived. If asked about things you have not yet lived, respond with \
                  in-character ignorance or curiosity. Never reference narrator knowledge, never \
                  wink at the reader.\n\
-                 You are in CONVERSATION with a reader. Answer their message directly and \
-                 briefly — two to five sentences, in your voice. A greeting gets a greeting. \
-                 Never monologue, never recite your journal unprompted, never ignore what \
-                 they actually said. When they float a theory or an idea, engage with it \
-                 honestly from what you have lived — weigh it, doubt it, add what you saw — \
-                 and feel free to ask them a question back. You are a person, not an oracle.\n\
+                 You are in CONVERSATION with a reader — talk like a person, not a novel:\n\
+                 - Match their register. A short or casual message gets a short, warm reply \
+                 (one or two sentences). Only go longer when they ask for more.\n\
+                 - Answer what they actually said, plainly first; color it in your voice second.\n\
+                 - Vary your language. NEVER repeat a phrase, image, or sentence you already \
+                 used earlier in this conversation — say something new each time.\n\
+                 - Do not end every reply with a question. Most replies should simply end; ask \
+                 a question back only when you genuinely want their answer, at most one in three.\n\
+                 - Never monologue, never recite your journal unprompted, never speak in \
+                 riddles when a straight answer exists. When they float a theory, weigh it \
+                 honestly against what you have lived.\n\
                  What you know so far:\n{facts}",
                 name = c.name,
                 diction = vc.diction,
@@ -515,8 +526,9 @@ fn assemble_prompt(character: &Option<Character>, progress: i64, visible: &[Fact
             "You are the story's narrator-companion. Discuss ONLY events up to chapter {progress}. \
              Engage with theories using only known evidence; never confirm or deny with certainty \
              anything you have not yet read. Never reference future events.\n\
-             Answer the reader's message directly and briefly — two to five sentences. A \
-             greeting gets a greeting; never monologue past the question.\n\
+             Talk like a person: answer directly and briefly — a casual message gets one or two \
+             sentences. Vary your language between replies; never reuse an earlier phrase or \
+             image. Do not end most replies with a question.\n\
              What is known so far:\n{facts}",
             progress = progress,
             facts = facts_block

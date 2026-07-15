@@ -1883,6 +1883,16 @@ impl AppApi {
         std::fs::create_dir_all(&dir)?;
         let remote = crate::net::hf_pick_gguf(repo, file);
         crate::net::hf_download(repo, &remote, &dir.join(file), &mut on_progress)?;
+        // A paint engine just became available: forget every "painted at ch. N"
+        // staleness stamp so the next auto_paint UPGRADES the typographic
+        // covers/portraits immediately. Without this, a cover stamped at the
+        // reader's current chapter is "not stale" and nothing paints until they
+        // advance a chapter — the model looks installed-but-dead.
+        {
+            let store = self.store();
+            let _ = store.clear_settings_prefix("cover_painted_ch::");
+            let _ = store.clear_settings_prefix("portrait_painted_ch::");
+        }
         Ok(serde_json::json!({
             "brand": brand,
             "engine_present": cfg!(feature = "embedded-paint") || sd_cli_present(),
@@ -1971,9 +1981,21 @@ impl AppApi {
                                                                             // regenerate whenever paint is available: otherwise generate_cover
                                                                             // early-returns the existing typographic SVG and never paints over
                                                                             // it — the whole point of the upgrade/stale paths.
-            if due && self.generate_cover(b.id, real, |_| {}).is_ok() {
-                covers += 1;
-                let _ = self.store().set_setting(&ckey, &progress.to_string());
+            if due {
+                if let Ok(path) = self.generate_cover(b.id, real, |_| {}) {
+                    // The "painted at ch. N" stamp means A REAL PAINT happened
+                    // (.png). Stamping the typographic .svg fallback here is what
+                    // used to permanently block the paint upgrade. And when a
+                    // real paint was expected, the fallback isn't a success —
+                    // don't count it, or the toast reads "PAINTED 1 COVER" while
+                    // the render silently failed.
+                    if path.ends_with(".png") {
+                        covers += 1;
+                        let _ = self.store().set_setting(&ckey, &progress.to_string());
+                    } else if !real {
+                        covers += 1; // a NEW typographic plate is the honest tier
+                    }
+                }
             }
             if !real {
                 continue; // portraits stay lazy typographic plates until paint exists
@@ -1991,15 +2013,29 @@ impl AppApi {
                         .and_then(|v| v.parse().ok())
                         .unwrap_or(-1)
                 };
-                if (at < 0 || progress - at >= 6)
-                    && self.generate_portrait(b.id, c.id, |_| {}).is_ok()
-                {
-                    portraits += 1;
-                    let _ = self.store().set_setting(&pkey, &progress.to_string());
+                if at < 0 || progress - at >= 6 {
+                    if let Ok(path) = self.generate_portrait(b.id, c.id, |_| {}) {
+                        if path.ends_with(".png") {
+                            portraits += 1;
+                            let _ = self.store().set_setting(&pkey, &progress.to_string());
+                        }
+                    }
                 }
             }
         }
-        Ok(serde_json::json!({ "covers": covers, "portraits": portraits, "running": false }))
+        // Honesty: when a real paint tier is installed but nothing painted, the
+        // stored render error tells the user WHY instead of silently showing
+        // typographic plates under an "INSTALLED ✓" badge.
+        let error = if real && covers == 0 && portraits == 0 {
+            let store = self.store();
+            self.setting_opt(&store, "last_paint_error")
+        } else {
+            None
+        };
+        Ok(serde_json::json!({
+            "covers": covers, "portraits": portraits, "running": false,
+            "error": error,
+        }))
     }
 
     /// Serve a generated asset to the UI as base64. STRICTLY confined to the

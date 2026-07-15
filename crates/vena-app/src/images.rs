@@ -178,9 +178,17 @@ impl AppApi {
                 Ok(()) => {
                     let bytes = std::fs::read(&tmp)?;
                     let _ = std::fs::remove_file(&tmp);
+                    let _ = self.store_guard().set_setting("last_paint_error", "");
                     return Ok(Some(bytes));
                 }
-                Err(e) => tracing::warn!("embedded paint failed, trying CLI: {e}"),
+                Err(e) => {
+                    // Remember WHY the paint failed — auto_paint surfaces it so
+                    // "model installed but no art" is diagnosable, not silent.
+                    let _ = self
+                        .store_guard()
+                        .set_setting("last_paint_error", &e.to_string());
+                    tracing::warn!("embedded paint failed, trying CLI: {e}");
+                }
             }
         }
         if !engine {

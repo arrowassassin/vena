@@ -192,6 +192,7 @@
     if (!this._autoPainted) {
       this._autoPainted = true;
       V.call("auto_paint").then(function (r) {
+        if (r && r.error && !r.covers && !r.portraits) { self._toast("PAINT ENGINE FAILED — " + String(r.error).slice(0, 120)); return; }
         if (r && (r.covers || r.portraits)) self._toast("PAINTED " + r.covers + " COVERS · " + r.portraits + " PORTRAITS — STAMPED ✦ AI");
       }).catch(function () {});
     }
@@ -355,6 +356,7 @@
       var chats = Object.assign({}, self.state.chats);
       chats[charId] = items.concat(chats[charId] || []);
       self.setState({ chats: chats });
+      self._scrollChat();
     }).catch(function () { self._histLoaded[key] = false; });
   };
 
@@ -455,6 +457,24 @@
       "</div></div></div>";
   };
 
+  /* keep the chat thread pinned to the newest message — the scroll column is
+   * the parent of the "EVERY REPLY GATED" pill (no id in the design) */
+  P._scrollChat = function () {
+    requestAnimationFrame(function () {
+      try {
+        var divs = document.querySelectorAll("div");
+        for (var i = 0; i < divs.length; i++) {
+          var d = divs[i];
+          if (d.childElementCount === 0 && (d.textContent || "").indexOf("EVERY REPLY GATED") === 0) {
+            var sc = d.parentElement;
+            if (sc) sc.scrollTop = sc.scrollHeight;
+            return;
+          }
+        }
+      } catch (e) { /* cosmetic — never break the turn */ }
+    });
+  };
+
   P._send = function (forcedText) {
     var self = this, st = this.state;
     if (this._busy) return;
@@ -470,6 +490,7 @@
     this._busy = true;
     var turnId = this._turnId = (this._turnId || 0) + 1;
     this.setState({ chats: chats, input: "", phase: "gate", stream: "" });
+    this._scrollChat();
     var cid = /^\d+$/.test(String(charId)) ? Number(charId) : null;
     V.call("companion_turn", { bookId: bookId, characterId: cid, message: text, turnId: turnId })
       .then(function (rep) {
@@ -491,6 +512,7 @@
                 c2[charId] = l2;
                 self._busy = false;
                 self.setState({ chats: c2, phase: null, stream: "" });
+                self._scrollChat();
               };
               if (shield) { self.setState({ phase: "repair" }); self._later(finish, 1100); }
               else finish();
@@ -568,6 +590,7 @@
       V.call("paint_tiers").then(function (ts) { self._paintTiers = ts || []; self.forceUpdate(); }).catch(function () {});
       V.call("get_image_status").then(function (is) { self._imageStatus = is; self.forceUpdate(); }).catch(function () {});
       V.call("auto_paint").then(function (r) {
+        if (r && r.error && !r.covers && !r.portraits) { self._toast("PAINT ENGINE FAILED — " + String(r.error).slice(0, 120)); return; }
         if (r && (r.covers || r.portraits)) self._toast("PAINTED " + r.covers + " COVERS · " + r.portraits + " PORTRAITS — STAMPED ✦ AI");
       }).catch(function () {});
     }).catch(function (e) {
