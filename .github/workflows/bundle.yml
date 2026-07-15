@@ -131,18 +131,19 @@ jobs:
         working-directory: crates/vena-app
         run: cargo tauri android init --ci
 
-      # Mobile ships RELAY-ONLY: no embedded llama.cpp / stable-diffusion.cpp.
-      # Compiling multi-GB GPU runtimes into an APK is impractical (a phone runs
-      # neither a 7B LLM nor SDXL usefully) and needs a fragile NDK C++ cross-
-      # compile. `--no-default-features` drops embedded-llm/embedded-paint; the
-      # app uses Cloud Relay / the download path on mobile. Desktop keeps embedded.
+      # Mobile ships EMBEDDED CHAT (llama.cpp) so the companion works out of the
+      # box: download the POCKET tier in the welcome stepper — no account, no
+      # API key. Embedded PAINT stays off (SD on a phone is impractical and its
+      # sys crate does not cross-compile to the NDK); images use relay or stay
+      # typographic. `--no-default-features` drops embedded-paint, then
+      # embedded-llm is re-enabled as a native --features flag.
       - name: Build APK
         working-directory: crates/vena-app
         env:
           NDK_HOME: ${{ env.NDK_HOME }}
-        # `--features tauri` is a native flag (tauri also injects custom-protocol);
+        # `--features` is a native tauri flag (tauri also injects custom-protocol);
         # `--no-default-features` isn't, so it's passed through to cargo after `--`.
-        run: cargo tauri android build --apk --target aarch64 --features tauri -- --no-default-features
+        run: cargo tauri android build --apk --target aarch64 --features tauri,embedded-llm -- --no-default-features
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
