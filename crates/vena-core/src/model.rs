@@ -213,6 +213,17 @@ pub struct ModelTier {
 }
 
 pub const MODEL_TIERS: &[ModelTier] = &[
+    // The phone tier: small enough for a 4 GB device, and the reason the
+    // mobile app works OUT OF THE BOX — download in the welcome stepper, no
+    // account, no API key. Q4_K_M of Qwen3-1.7B ≈ 1.1 GB on disk.
+    ModelTier {
+        id: "pocket",
+        brand: "POCKET·2B",
+        chip: "2B",
+        gguf: "Qwen3-1.7B-Q4_K_M",
+        size_gb: 1.1,
+        min_ram_gb: 4,
+    },
     ModelTier {
         id: "ink",
         brand: "INK·3B",

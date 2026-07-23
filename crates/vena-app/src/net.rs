@@ -327,6 +327,10 @@ pub fn download_hf_gguf(model: &str, dir: &Path, on_progress: &mut dyn FnMut(u32
 /// The shipped Qwen3 family (§11.4). Bartowski GGUF repos are the community default.
 fn hf_repo_file(model: &str) -> Option<(&'static str, &'static str)> {
     match model {
+        m if m.contains("Qwen3-1.7B") => Some((
+            "bartowski/Qwen_Qwen3-1.7B-GGUF",
+            "Qwen_Qwen3-1.7B-Q4_K_M.gguf",
+        )),
         m if m.contains("Qwen3-4B") => Some((
             "bartowski/Qwen_Qwen3-4B-Instruct-2507-GGUF",
             "Qwen_Qwen3-4B-Instruct-2507-Q4_K_M.gguf",
@@ -602,9 +606,26 @@ mod tests {
             super::hf_repo_file("Qwen3-4B-Instruct-Q4_K_M").unwrap().0,
             "bartowski/Qwen_Qwen3-4B-Instruct-2507-GGUF"
         );
+        assert_eq!(
+            super::hf_repo_file("Qwen3-1.7B-Q4_K_M").unwrap().1,
+            "Qwen_Qwen3-1.7B-Q4_K_M.gguf"
+        );
         assert!(super::hf_repo_file("Qwen3-8B-Instruct-Q4_K_M").is_some());
         assert!(super::hf_repo_file("Qwen3-14B-Instruct-Q4_K_M").is_some());
         assert!(super::hf_repo_file("unknown-model").is_none());
+    }
+
+    #[test]
+    fn every_model_tier_resolves_to_a_hf_repo() {
+        // A tier the download command can't map is a dead DOWNLOAD button.
+        for t in vena_core::model::MODEL_TIERS {
+            assert!(
+                super::hf_repo_file(t.gguf).is_some(),
+                "tier {} ({}) has no HF repo mapping",
+                t.id,
+                t.gguf
+            );
+        }
     }
 
     #[test]
